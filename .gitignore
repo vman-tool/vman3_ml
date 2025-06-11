@@ -91,3 +91,4 @@ vmanenv
 .vmanenv
 .venv
 .csv
+*.xlsx
