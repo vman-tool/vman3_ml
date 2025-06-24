@@ -67,11 +67,19 @@ class CCVAPredictor:
             # Encode and scale features
             preprocessor = DataPreprocessor(verbose=self.verbose)
             encoded, self.encoders  = preprocessor._encode_features(cleaned_df)
-            encoded = encoded[self.expected_columns]
+
+            # select features used during training
+            #encoded = encoded[self.expected_columns]
+
+            encoded = encoded[self.scaler.feature_names_in_]
 
             # Check for duplicate columns
-            #print("Duplicates in encoded.columns:", encoded.columns.duplicated().any())
-            #print("Duplicates in scaler.feature_names_in_:", pd.Series(self.scaler.feature_names_in_).duplicated().any())
+            print("Duplicates in encoded.columns:", encoded.columns.duplicated().any())
+            print("Duplicates in scaler.feature_names_in_:", pd.Series(self.scaler.feature_names_in_).duplicated().any())
+
+            print(f"Encoded\n {encoded.columns}")
+            print(f"Scaled \n {self.scaler.feature_names_in_}")
+    
 
             if encoded.columns.duplicated().any():
                 dupes_encoded = encoded.columns[encoded.columns.duplicated(keep=False)].unique()
@@ -92,9 +100,11 @@ class CCVAPredictor:
                 duplicates = encoded.columns.duplicated()
                 encoded = encoded.loc[:, ~duplicates]
 
-            array_to_scale = encoded.values.astype('float32')
-            scaled = self.scaler.transform(array_to_scale)
-        
+            # array_to_scale = encoded.values.astype('float32')
+            # scaled = self.scaler.transform(array_to_scale)
+            scaled = self.scaler.transform(encoded)
+            # print(scaled.head())
+            
             # 7. Prediction logic
             if hasattr(self.model, 'predict_proba'):
                 probs = self.model.predict_proba(scaled)
@@ -109,19 +119,19 @@ class CCVAPredictor:
                 else:
                     ood_mask = np.zeros_like(confidence, dtype=bool)
                     
-            elif hasattr(self.model, 'decision_function'):
-                scores = self.model.decision_function(scaled)
-                predictions = self.model.predict(scaled)
+            # elif hasattr(self.model, 'decision_function'):
+            #     scores = self.model.decision_function(scaled)
+            #     predictions = self.model.predict(scaled)
                 
-                if len(scores.shape) == 1:  # Binary
-                    confidence = self._normalize_decision_scores(scores)
-                else:  # Multiclass
-                    confidence = self._normalize_decision_scores(scores.max(axis=1))
+            #     if len(scores.shape) == 1:  # Binary
+            #         confidence = self._normalize_decision_scores(scores)
+            #     else:  # Multiclass
+            #         confidence = self._normalize_decision_scores(scores.max(axis=1))
                 
-                if self.ood_threshold is not None:
-                    ood_mask = confidence < self.ood_threshold
-                else:
-                    ood_mask = np.zeros_like(confidence, dtype=bool)
+            #     if self.ood_threshold is not None:
+            #         ood_mask = confidence < self.ood_threshold
+            #     else:
+            #         ood_mask = np.zeros_like(confidence, dtype=bool)
             else:
                 predictions = self.model.predict(scaled)
                 ood_mask = np.zeros(len(predictions), dtype=bool)

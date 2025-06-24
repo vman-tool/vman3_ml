@@ -1,6 +1,7 @@
 # vman3_ml/vman3_ml/training.py
 from sklearn.model_selection import train_test_split, KFold, RandomizedSearchCV
 
+from collections import Counter 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from .processing import DataPreprocessor
@@ -8,6 +9,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
+
+from imblearn.under_sampling import RandomUnderSampler
 
 class ModelTrainer:
     def __init__(self, verbose=False):
@@ -24,10 +27,8 @@ class ModelTrainer:
         self.label_encoder = None
         self.encoders = None
         self.classes_ = None
-
-        
-        
-    def train(self, X, y, test_size=0.3, n_iter_search=10):
+   
+    def train(self, X, y, test_size=0.2, n_iter_search=10):
         """Train and evaluate models"""
         
         # Validate input shapes
@@ -65,8 +66,20 @@ class ModelTrainer:
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
-            X_scaled, y_encoded, test_size=test_size, random_state=42
+            np.asarray(X_scaled), np.asarray(y_encoded), test_size=test_size, random_state=42
         )
+        print('Shape of X_train', X_train.shape)
+        print('Shape of X_test', X_test.shape)
+        print('Shape of y_train', y_train.shape)
+        print('Shape of y_test', y_test.shape)
+
+        # balance the training classes
+        print('The number of training examples before resampling:\n', Counter(y_train))
+
+        # balance the labels using RandomUnderSampler
+        rus = RandomUnderSampler(random_state=42)
+        X_train_res, y_train_res = rus.fit_resample(X_train, y_train)
+        print('The number of samples after resampling:\n', Counter(y_train_res))
 
         # Hyperparameter search space
         param_dist = {
@@ -90,23 +103,35 @@ class ModelTrainer:
                 cv=5,
                 verbose=self.verbose
             )
-            search.fit(X_train, y_train)
+            search.fit(X_train_res, y_train_res)
             
             # Get best model from search
-            model = search.best_estimator_
-            score = model.score(X_test, y_test)
+            # model = search.best_estimator_
+            print("Best: %.2f using %s" % (search.best_score_,search.best_params_))
+
+            # Insert the best parameters identified by randomized grid search into the base classifier
+            best_classifier = model.set_params(**search.best_params_)
+
+            # fit the final model with best parameters
+            self.best_model = best_classifier.fit(X_train_res, y_train_res)
+
+            # predict model test set
+            y_pred = self.best_model.predict(X_test)
+            score = accuracy_score(y_test, y_pred)
             
             if score > best_score:
                 best_score = score
-                self.best_model = model
+                # self.best_model = best_classifier
                 if self.verbose:
                     print(f"New best model: {name} with accuracy {score:.2%}")
-                    print("Best parameters:", search.best_params_)
+                    # print("Best parameters:", search.best_params_)
             
             # Set OOD and dk threshold based on available methods
             if hasattr(model, 'predict_proba'):
                 probs = model.predict_proba(X_test)
-                self.ood_threshold = np.percentile(probs.max(axis=1), 5)  # 5th percentile of confidence
+                # print(f"The value for probs max is\n {probs.max(axis=1)}")
+                # print(f"The value for nth percentile is\n {np.percentile(probs.max(axis=1), 5)}")
+                self.ood_threshold = np.percentile(probs.max(axis=1), 55)  # 5th percentile of confidence
                 if self.verbose:
                     print(f"Set OOD threshold (probability): {self.ood_threshold:.2f}")
 
