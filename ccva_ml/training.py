@@ -1,14 +1,25 @@
 # vman3_ml/vman3_ml/training.py
-from sklearn.model_selection import train_test_split, KFold, RandomizedSearchCV
+from sklearn.model_selection import (
+    train_test_split, 
+    KFold,
+    RandomizedSearchCV
+)
 
 from collections import Counter 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, classification_report
+
+from sklearn.metrics import (
+    accuracy_score, 
+    classification_report, 
+    precision_recall_fscore_support,
+    confusion_matrix
+)
 from .processing import DataPreprocessor
 import pandas as pd
 import numpy as np
 import joblib
 import os
+from time import time
 
 from imblearn.under_sampling import RandomUnderSampler
 
@@ -63,98 +74,157 @@ class ModelTrainer:
                 X_scaled = X_scaled.loc[:, ~duplicates]
 
         y_encoded, self.label_encoder = preprocessor._encode_target(y)
-        
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            np.asarray(X_scaled), np.asarray(y_encoded), test_size=test_size, random_state=42
-        )
-        print('Shape of X_train', X_train.shape)
-        print('Shape of X_test', X_test.shape)
-        print('Shape of y_train', y_train.shape)
-        print('Shape of y_test', y_test.shape)
 
-        # balance the training classes
-        print('The number of training examples before resampling:\n', Counter(y_train))
+        # set a cross-validation strategy
+        num_rounds = 5 # increase this to 5 or 10 once code is bug-free
+        seed = np.random.randint(0, 81470)
 
-        # balance the labels using RandomUnderSampler
-        rus = RandomUnderSampler(random_state=42)
-        X_train_res, y_train_res = rus.fit_resample(X_train, y_train)
-        print('The number of samples after resampling:\n', Counter(y_train_res))
+        # prepare matrices of results
+        kf_results = pd.DataFrame() # model parameters and global accuracy score
+        kf_per_class_results = [] # per class accuracy scores
+        save_predicted, save_true = [], [] # save predicted and true values for each loop
 
-        # Hyperparameter search space
-        param_dist = {
-            'n_estimators': [100, 200, 300],
-            'max_depth': [None, 10, 20, 30],
-            'min_samples_split': [2, 5, 10],
-            'min_samples_leaf': [1, 2, 4]
-        }
-        
-        # Train and tune models
-        best_score = 0
-        for name, model in self.models.items():
-            if self.verbose:
-                print(f"\nTraining {name} with {n_iter_search} iterations...")
+        start = time()
+
+        for round in range(num_rounds):
+
+            # Split data
+            X_train, X_test, y_train, y_test = train_test_split(
+                np.asarray(X_scaled), np.asarray(y_encoded), test_size=test_size, random_state=seed, 
+                stratify=np.asarray(y_encoded)
+                )
+            print('Shape of X_train', X_train.shape)
+            print('Shape of X_test', X_test.shape)
+            print('Shape of y_train', y_train.shape)
+            print('Shape of y_test', y_test.shape)
+
+            # balance the training classes
+            print('The number of training examples before resampling:\n', Counter(y_train))
+
+            # balance the labels using RandomUnderSampler
+            rus = RandomUnderSampler(random_state=42)
+            X_train_res, y_train_res = rus.fit_resample(X_train, y_train)
+            print('The number of samples after resampling:\n', Counter(y_train_res))
+
+            # Hyperparameter search space
+            param_dist = {
+                'n_estimators': [100, 200, 300],
+                'max_depth': [None, 10, 20, 30],
+                'min_samples_split': [2, 5, 10],
+                'min_samples_leaf': [1, 2, 4]
+            }
             
-            # Randomized parameter search
-            search = RandomizedSearchCV(
-                model,
-                param_distributions=param_dist,
-                n_iter=n_iter_search,
-                cv=5,
-                verbose=self.verbose
-            )
-            search.fit(X_train_res, y_train_res)
+            # Train and tune models
+            best_score = 0
+            for name, model in self.models.items():
+                if self.verbose:
+                    print(f"\nTraining {name} with {n_iter_search} iterations...")
+                    
+
+                # Randomized parameter search
+                # Generate models using combination of settings
+                search = RandomizedSearchCV(
+                    model,
+                    param_distributions=param_dist,
+                    n_iter=n_iter_search,
+                    scoring='accuracy',
+                    cv=5,
+                    refit=True,
+                    verbose=self.verbose
+                )
+                
+                search.fit(X_train_res, y_train_res)
+                
+                # Get best model from search
+                # model = search.best_estimator_
+                print("Best: %.2f using %s" % (search.best_score_,search.best_params_))
+
+                # Insert the best parameters identified by randomized grid search into the base classifier
+                best_classifier = model.set_params(**search.best_params_)
+
+                # fit the final model with best parameters
+                self.best_model = best_classifier.fit(X_train_res, y_train_res)
+
+                # predict model test set
+                y_pred = self.best_model.predict(X_test)
+                score = accuracy_score(y_test, y_pred)
+
+                # calculate classification report
+                local_cm = confusion_matrix(y_test, y_pred)
+                local_report = classification_report(y_test, y_pred)
+
+                # zip predictions for all rounds for plotting averaged confusion matrix
+                
+                for predicted, true in zip(y_pred, y_test):
+                    save_predicted.append(predicted)
+                    save_true.append(true)
+
             
-            # Get best model from search
-            # model = search.best_estimator_
-            print("Best: %.2f using %s" % (search.best_score_,search.best_params_))
+                # summarizing results
+                local_kf_results = pd.DataFrame(
+                                                    [
+                                                        ("Accuracy", accuracy_score(y_test, y_pred)), 
+                                                        ("CM", local_cm), 
+                                                        ("Classification report", local_report), 
+                                                        ("y_test", y_test),
+                                                    ]
+                                                ).T
+                
+                local_kf_results.columns = local_kf_results.iloc[0]
+                local_kf_results = local_kf_results[1:]
 
-            # Insert the best parameters identified by randomized grid search into the base classifier
-            best_classifier = model.set_params(**search.best_params_)
+                kf_results = pd.concat(
+                                        [kf_results, local_kf_results],
+                                        axis=0,
+                                        join='outer'
+                                    ).reset_index(drop=True)
 
-            # fit the final model with best parameters
-            self.best_model = best_classifier.fit(X_train_res, y_train_res)
+                # per class accuracy
+                local_support = precision_recall_fscore_support(y_test, y_pred)[3]
+                local_acc = np.diag(local_cm) / local_support
+                kf_per_class_results.append(local_acc)
 
-            # predict model test set
-            y_pred = self.best_model.predict(X_test)
-            score = accuracy_score(y_test, y_pred)
-            
-            if score > best_score:
-                best_score = score
-                # self.best_model = best_classifier
-                if self.verbose:
-                    print(f"New best model: {name} with accuracy {score:.2%}")
-                    # print("Best parameters:", search.best_params_)
-            
-            # Set OOD and dk threshold based on available methods
-            if hasattr(model, 'predict_proba'):
-                probs = model.predict_proba(X_test)
-                # print(f"The value for probs max is\n {probs.max(axis=1)}")
-                # print(f"The value for nth percentile is\n {np.percentile(probs.max(axis=1), 5)}")
-                self.ood_threshold = np.percentile(probs.max(axis=1), 55)  # 5th percentile of confidence
-                if self.verbose:
-                    print(f"Set OOD threshold (probability): {self.ood_threshold:.2f}")
+                
+                if score > best_score:
+                    best_score = score
+                    # self.best_model = best_classifier
+                    if self.verbose:
+                        print(f"New best model: {name} with accuracy {score:.2%}")
+                        # print("Best parameters:", search.best_params_)
+                
+                # Set OOD and dk threshold based on available methods
+                if hasattr(model, 'predict_proba'):
+                    probs = model.predict_proba(X_test)
+                    # print(f"The value for probs max is\n {probs.max(axis=1)}")
+                    # print(f"The value for nth percentile is\n {np.percentile(probs.max(axis=1), 5)}")
+                    self.ood_threshold = np.percentile(probs.max(axis=1), 55)  # 5th percentile of confidence
+                    if self.verbose:
+                        print(f"Set OOD threshold (probability): {self.ood_threshold:.2f}")
 
-                # calculate 'dk' - dont know ratio
-                dk_ratios = (X == 'dk').mean(axis=1)
-                self.dk_threshold = np.percentile(dk_ratios, 95)  # 95th percentile as threshold
-                if self.verbose:
-                    print(f"Set DK ratio threshold: {self.dk_threshold:.2f}")
+                    # calculate 'dk' - dont know ratio
+                    dk_ratios = (X == 'dk').mean(axis=1)
+                    self.dk_threshold = np.percentile(dk_ratios, 95)  # 95th percentile as threshold
+                    if self.verbose:
+                        print(f"Set DK ratio threshold: {self.dk_threshold:.2f}")
 
-            elif hasattr(model, 'decision_function'):
-                scores = model.decision_function(X_test)
-                if len(scores.shape) == 1:  # Binary classification
-                    self.ood_threshold = np.percentile(scores, 5)
-                else:  # Multiclass
-                    self.ood_threshold = np.percentile(scores.max(axis=1), 5)
-                if self.verbose:
-                    print(f"Set OOD threshold (decision score): {self.ood_threshold:.2f}")
-            else:
-                self.ood_threshold = None
-                if self.verbose:
-                    print("No OOD threshold available for this model type")
-        
-        return self.best_model
+                elif hasattr(model, 'decision_function'):
+                    scores = model.decision_function(X_test)
+                    if len(scores.shape) == 1:  # Binary classification
+                        self.ood_threshold = np.percentile(scores, 5)
+                    else:  # Multiclass
+                        self.ood_threshold = np.percentile(scores.max(axis=1), 5)
+                    if self.verbose:
+                        print(f"Set OOD threshold (decision score): {self.ood_threshold:.2f}")
+                else:
+                    self.ood_threshold = None
+                    if self.verbose:
+                        print("No OOD threshold available for this model type")
+
+        elapsed = time() - start
+        print("Time elapsed: {0:.2f} minutes ({1:.1f} sec)".format(
+            elapsed / 60, elapsed))
+                    
+        return self.best_model, save_predicted, save_true, kf_results, kf_per_class_results
 
     def save_model(self, path='models', preprocessor=None):
         """Save trained model and preprocessing objects
@@ -175,7 +245,8 @@ class ModelTrainer:
             'ood_threshold': self.ood_threshold,
             'dk_threshold': getattr(self, 'dk_threshold', 0.5),  # Default if not set
             'best_params': getattr(self.best_model, 'best_params_', None),
-            'final_feature_order': preprocessor.final_training_columns
+            'final_feature_order': preprocessor.final_training_columns, 
+            'classification_report': classification_report
         }
         
         joblib.dump(artifacts, f"{path}/ccva_model.pkl")
