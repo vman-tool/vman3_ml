@@ -1,0 +1,39 @@
+GNU GENERAL PUBLIC LICENSE
+                       Version 3, 29 June 2007
+
+Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+Everyone is permitted to copy and distribute verbatim copies
+of this license document, but changing it is not allowed.
+
+[... TRUNCATED FOR BREVITY IN DISPLAY, FULL TEXT WILL BE USED ...]
+
+(You can view the full GPL v3 license text at https://www.gnu.org/licenses/gpl-3.0.txt)
+
+--------------------------------------------------
+ADDITIONAL TERMS UNDER SECTION 7 OF GPLv3
+--------------------------------------------------
+
+Pursuant to Section 7 of the GNU General Public License version 3, the following
+additional terms apply to this software:
+
+1. **Attribution Requirement**  
+   You must include a **visible and accessible link** to the original version of the software,
+   such as its public repository or official website, in:
+   - The source code (e.g., README, license header, or main doc file)
+   - Any public-facing interface (if applicable), such as an About screen or website footer
+
+2. **Disclosure of Modifications**  
+   If you modify this software and redistribute it (either as source or compiled binary),
+   you must also:
+   - Provide a **public description** of the changes made,
+   - Include this description in the source repository or documentation, or
+   - Provide a URL clearly linking to a changelog or explanation page.
+
+3. **No Misrepresentation**  
+   You must not misrepresent your version as being the original software. Clearly indicate that
+   your version is a derivative or fork, unless you receive written permission from the original author(s).
+
+These additional terms are consistent with the GPL and serve to ensure transparency and attribution.
+They do not limit your rights under the GPL v3 in any other way.
+
+Copyright (C) 2025 Verbal Autopsy Manager (VMan)
