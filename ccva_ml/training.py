@@ -2,13 +2,18 @@
 from sklearn.model_selection import train_test_split, KFold, RandomizedSearchCV
 
 from collections import Counter 
+from collections import defaultdict
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from .processing import DataPreprocessor
+
 import pandas as pd
 import numpy as np
 import joblib
 import os
+import json
+import matplotlib.pyplot as plt
+
 
 from imblearn.under_sampling import RandomUnderSampler
 
@@ -66,7 +71,8 @@ class ModelTrainer:
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
-            np.asarray(X_scaled), np.asarray(y_encoded), test_size=test_size, random_state=42
+            #np.asarray(X_scaled), np.asarray(y_encoded), test_size=test_size, random_state=42
+            np.asarray(X_scaled), np.asarray(y_encoded), test_size=test_size, random_state=42, stratify=y_encoded
         )
         print('Shape of X_train', X_train.shape)
         print('Shape of X_test', X_test.shape)
@@ -185,3 +191,168 @@ class ModelTrainer:
             if hasattr(self.best_model, 'best_params_'):
                 print("Best parameters:", self.best_model.best_params_)
     
+    def evaluate_with_cross_validation(self, X_test, y_test, cv=5, save_path=None):
+        """Evaluate the trained model using cross-validation on the test data.
+
+        Args:
+            X_test (np.ndarray): Test features.
+            y_test (np.ndarray): Test labels.
+            cv (int): Number of cross-validation folds.
+            save_path (str, optional): Path to save the results. If None, results are printed.
+        """
+        if self.best_model is None:
+            raise ValueError("No trained model found. Please train a model before evaluation.")
+
+        #kf = KFold(n_splits=cv, shuffle=True, random_state=42)
+
+        # use stratified sampling
+        from sklearn.model_selection import StratifiedKFold
+        kf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
+
+
+        results = []
+        accuracies = []
+        all_reports = []
+
+        #for fold, (train_idx, val_idx) in enumerate(kf.split(X_test)):
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X_test, y_test)):
+            X_val_train, X_val_test = X_test[train_idx], X_test[val_idx]
+            y_val_train, y_val_test = y_test[train_idx], y_test[val_idx]
+
+            model = self.best_model
+            model.fit(X_val_train, y_val_train)
+            y_pred = model.predict(X_val_test)
+
+            acc = accuracy_score(y_val_test, y_pred)
+            accuracies.append(acc)
+            #report = classification_report(y_val_test, y_pred, output_dict=True)
+            report = classification_report(y_val_test, y_pred, output_dict=True, zero_division=0)
+            all_reports.append(report)
+            results.append({
+                'fold': fold + 1,
+                'accuracy': acc,
+                'classification_report': report
+            })
+
+            print(f"\nFold {fold + 1} Accuracy: {acc:.4f}")
+            #print(classification_report(y_val_test, y_pred))
+            print(classification_report(y_val_test, y_pred, zero_division=0))
+
+        # print label mapping
+        if self.label_encoder is not None:
+            print("\nLabel Mapping:")
+            for i, label in enumerate(self.label_encoder.classes_):
+                print(f"  {i}: {label}")
+
+        # Compute and print average and std deviation
+        avg_acc = np.mean(accuracies)
+        std_acc = np.std(accuracies)
+        print(f"\nAverage Accuracy across {cv} folds: {avg_acc:.4f}")
+        print(f"Standard Deviation of Accuracy: {std_acc:.4f}")
+
+
+        # Compute average classification report
+        avg_report = defaultdict(lambda: defaultdict(float))
+        count_report = defaultdict(int)
+
+        for report in all_reports:
+            for label, metrics in report.items():
+                if isinstance(metrics, dict):
+                    for metric, value in metrics.items():
+                        avg_report[label][metric] += value
+                    count_report[label] += 1
+                    
+
+        for label in avg_report:
+            if isinstance(avg_report[label], dict):
+                for metric in avg_report[label]:
+                    avg_report[label][metric] /= count_report[label]
+
+        # print("\nAverage Classification Report:")
+        # for label, metrics in avg_report.items():
+        #     print(f"{label}:")
+        #     for metric, value in metrics.items():
+        #         print(f"  {metric}: {value:.4f}")
+
+
+
+        # # Format and print the averaged classification report as a table
+        # header = f"{'Label':<15}{'Precision':>10}{'Recall':>10}{'F1-Score':>10}{'Support':>10}"
+        # print("\nAveraged Classification Report:")
+        # print(header)
+        # print("-" * len(header))
+
+        # for label, metrics in avg_report.items():
+        #     if label in ['accuracy']:
+        #         continue
+        #     label_name = label
+        #     if label.isdigit():
+        #         idx = int(label)
+        #         if idx < len(self.label_encoder.classes_):
+        #             label_name = self.label_encoder.classes_[idx]
+        #     precision = metrics.get('precision', 0.0)
+        #     recall = metrics.get('recall', 0.0)
+        #     f1 = metrics.get('f1-score', 0.0)
+        #     support = metrics.get('support', 0.0)
+        #     print(f"{label_name:<15}{precision:10.2f}{recall:10.2f}{f1:10.2f}{support:10.0f}")
+
+
+
+        # Replace numeric keys with actual label names
+        mapped_report = {}
+        for key, metrics in avg_report.items():
+            if key.isdigit():
+                label = self.label_encoder.classes_[int(key)]
+            else:
+                label = key
+            mapped_report[label] = metrics
+
+        # Determine column widths
+        label_width = max(len(label) for label in mapped_report.keys())
+        metric_names = ['precision', 'recall', 'f1-score', 'support']
+        col_widths = {metric: max(len(metric), 9) for metric in metric_names}
+
+        # Print header
+        header = f"{'Label':<{label_width}}"
+        for metric in metric_names:
+            header += f"  {metric.capitalize():>{col_widths[metric]}}"
+        print(header)
+        print('-' * len(header))
+
+        # Print each row
+        for label, metrics in mapped_report.items():
+            row = f"{label:<{label_width}}"
+            for metric in metric_names:
+                value = metrics.get(metric, 0)
+                if metric == 'support':
+                    row += f"  {int(value):>{col_widths[metric]}}"
+                else:
+                    row += f"  {value:>{col_widths[metric]}.2f}"
+            print(row)
+
+
+        if save_path:
+            output_data = {
+                            'fold_results': results,
+                            'average_accuracy': avg_acc,
+                            'std_accuracy': std_acc,
+                            'average_classification_report': {label: dict(metrics) for label, metrics in avg_report.items()}
+                        }
+            with open(save_path, 'w') as f:
+                json.dump(output_data, f, indent=4)
+            #pd.DataFrame(results).to_json(save_path, orient='records', lines=True)
+            print(f"\nCross-validation results saved to {save_path}")
+
+        # visualize
+        plt.figure(figsize=(8, 5))
+        plt.bar(range(1, cv + 1), accuracies, color='skyblue')
+        plt.xlabel('Fold')
+        plt.ylabel('Accuracy')
+        plt.title('Cross-Validation Accuracy per Fold')
+        plt.xticks(range(1, cv + 1))
+        plt.ylim(0, 1)
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.savefig('cv_accuracy_plot.png')
+        print("\nAccuracy plot saved to cv_accuracy_plot.png")
+

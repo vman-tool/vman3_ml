@@ -36,6 +36,20 @@ def main():
     trainer = ModelTrainer(verbose=args.verbose)
     trainer.train(X, y)
     trainer.save_model(preprocessor=preprocessor)
+
+
+    # cross validation
+    from sklearn.model_selection import train_test_split
+    X_encoded, _ = preprocessor._encode_features(X)
+    X_scaled, _ = preprocessor._scale_features(X_encoded)
+    y_encoded, _ = preprocessor._encode_target(y)
+    X_train, X_test, y_train, y_test = train_test_split(
+        #np.asarray(X_scaled), np.asarray(y_encoded), test_size=0.2, random_state=42
+        np.asarray(X_scaled), np.asarray(y_encoded),test_size=0.2, random_state=42, stratify=y_encoded
+    )
+    trainer.evaluate_with_cross_validation(X_test, y_test, cv=5, save_path='cv_results.json')
+
+
     
     print(f"Training completed.")
 
