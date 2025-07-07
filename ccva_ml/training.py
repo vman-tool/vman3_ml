@@ -220,7 +220,7 @@ class ModelTrainer:
             y_val_train, y_val_test = y_test[train_idx], y_test[val_idx]
 
             model = self.best_model
-            model.fit(X_val_train, y_val_train)
+            #model.fit(X_val_train, y_val_train) # no need to re-fit the model in a cross validation
             y_pred = model.predict(X_val_test)
 
             acc = accuracy_score(y_val_test, y_pred)
