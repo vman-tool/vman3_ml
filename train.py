@@ -1,6 +1,6 @@
 # vman3_ml/train.py
 from ccva_ml.processing import DataPreprocessor
-from ccva_ml.training import ModelTrainer
+from ccva_ml.training_2 import ModelTrainer
 import argparse
 import pandas as pd
 import numpy as np
