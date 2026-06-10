@@ -4,16 +4,41 @@ import numpy as np
 from vman3_dq import change_null_toskipped
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import chardet
+import re
+import json
+from pathlib import Path
+
+from .instrument_dictionary import (
+    detect_instrument_version,
+    load_instrument_dictionary,
+    load_instrument_dictionaries,
+    normalize_column_name,
+    normalize_target_aliases,
+    select_feature_columns,
+)
+from .mapcauselist import map_causelist
 
 class DataPreprocessor:
-    def __init__(self, verbose=False, min_vc=130, na_threshold=0.7):
+    def __init__(self, verbose=False, min_vc=130, na_threshold=0.7, use_quality_filter=True, taxonomy_path=None, instrument_version=None):
         self.verbose = verbose
         self.min_vc = min_vc
         self.na_threshold = na_threshold
+        self.use_quality_filter = use_quality_filter
+        self.taxonomy_path = Path(taxonomy_path) if taxonomy_path else Path(__file__).resolve().parent / 'data' / 'cause_taxonomy.json'
+        self.taxonomy = self._load_cause_taxonomy(self.taxonomy_path)
+        self.instrument_version = instrument_version
+        self.instrument_dictionary = None
+        self.instrument_detection_ = {}
         self.final_training_columns = None  # To store the final columns used in training
+        self.training_quality_report_ = {}
+        self.training_audit_report_ = {}
+        self.rare_label_mapping_ = {}
+        self.label_family_mapping_ = {}
+        self.source_path = None
         
     def load_data(self, file_path):
         """Load and preprocess raw data"""
+        self.source_path = str(file_path)
         with open(file_path, 'rb') as file:
             encoding = chardet.detect(file.read())['encoding']
         df = pd.read_csv(file_path, encoding=encoding, low_memory=False)
@@ -43,42 +68,183 @@ class DataPreprocessor:
         )
        
         clean_df = self._merge_duplicate_columns(df)
+        clean_df = normalize_target_aliases(clean_df)
+        clean_df = self._merge_duplicate_columns(clean_df)
         return clean_df
+
+    def _load_instrument_context(self, df, source_path=None, instrument_version=None):
+        """Detect and load the version-specific WHO VA instrument dictionary."""
+        if instrument_version:
+            detection = {"version": str(instrument_version), "scores": {}, "reason": "explicit"}
+        else:
+            detection = detect_instrument_version(
+                df,
+                source_path=source_path or self.source_path,
+                dictionaries=load_instrument_dictionaries(),
+            )
+
+        version = str(detection["version"])
+        self.instrument_version = version
+        self.instrument_detection_ = detection
+        self.instrument_dictionary = load_instrument_dictionary(version)
+        return detection, self.instrument_dictionary
+
+    def _get_feature_columns(self, df, instrument_dictionary=None):
+        """Return the feature columns that are present in the dataframe for the detected instrument."""
+        if instrument_dictionary:
+            selected, missing = select_feature_columns(df, instrument_dictionary)
+            if selected:
+                if self.verbose and missing:
+                    print(f"Instrument dictionary missing {len(missing)} feature columns in the input data")
+                return selected, missing
+
+        legacy_sets = self._get_feature_sets()
+        selected = []
+        for _, columns in legacy_sets.items():
+            for column in columns:
+                if column in df.columns and column not in selected:
+                    selected.append(column)
+        return selected, []
     
-    def _prepare_training_data(self, df, target_col='cod_who_ucod'):
-        """Prepare features and optionally target for training/prediction
-        
-        Args:
-            df: Input DataFrame
-            min_vc: Minimum value count for target categories
-            na_threshold: Threshold for dropping columns with too many NAs
-            target_col: Name of target column (None for prediction mode)
-        
-        Returns:
-            Tuple of (features, target) or (features, None) in prediction mode
+    def _apply_who_causelist_mapping(self, df):
+        """Add WHO standardised cause columns by mapping pcva_ucod_icd.
+
+        Adds: pcva_who_cod, pcva_who_id, pcva_who_major, pcva_who_broad.
+        Skips silently when pcva_ucod_icd is absent.
         """
-        # Feature selection and validation
-        feature_sets = self._get_feature_sets()
-        dfs = []
+        return map_causelist(df, icd_col='pcva_ucod_icd', verbose=self.verbose)
 
-        for name, columns in feature_sets.items():
-            missing = [col for col in columns if col.lower() not in [c.lower() for c in df.columns]]
-            if missing:
-                raise ValueError(f"Missing important column {name}: {missing}")
-            dfs.append(df[columns])
+    def align_to_version(self, df, source_version, target_version):
+        """Project a DataFrame from source_version feature space into target_version feature space.
 
-        # Combine features and optionally target
+        - Drops columns that exist only in source_version (not in target)
+        - Fills columns that exist only in target_version with 'dk' (string) or -999 (numeric)
+
+        This does NOT harmonise cause labels — it only aligns predictor features.
+        Use this for prediction robustness or cross-version experiments, not for
+        mixing training labels across versions (their label schemas are incompatible).
+
+        Returns the aligned DataFrame.
+        """
+        src_dict = load_instrument_dictionary(str(source_version))
+        tgt_dict = load_instrument_dictionary(str(target_version))
+
+        src_features = set(src_dict.get('feature_columns', []))
+        tgt_features = set(tgt_dict.get('feature_columns', []))
+
+        src_only = src_features - tgt_features
+        tgt_only = tgt_features - src_features
+
+        aligned = df.copy()
+
+        # Drop source-only columns
+        cols_to_drop = [c for c in aligned.columns if c in src_only]
+        aligned = aligned.drop(columns=cols_to_drop)
+
+        # Fill target-only columns with appropriate sentinel
+        for col in sorted(tgt_only):
+            if col not in aligned.columns:
+                tgt_col_info = next(
+                    (s for s in tgt_dict.get('survey', []) if s.get('name') == col), {}
+                )
+                col_type = tgt_col_info.get('type', 'select_one')
+                if col_type in ('integer', 'decimal'):
+                    aligned[col] = -999
+                else:
+                    aligned[col] = 'dk'
+
+        if self.verbose:
+            print(
+                f"align_to_version {source_version}→{target_version}: "
+                f"dropped {len(cols_to_drop)} source-only cols, "
+                f"filled {len(tgt_only)} target-only cols with sentinels"
+            )
+        return aligned
+
+    def _prepare_training_data(self, df, target_col='pcva_who_cod', source_path=None, instrument_version=None):
+        """Prepare features and optionally target for training/prediction.
+
+        Args:
+            df:                 Input DataFrame.
+            target_col:         Target column name. Default 'pcva_who_cod' (WHO standardised
+                                cause mapped from pcva_ucod_icd). Pass None for prediction mode.
+            source_path:        Path hint used for instrument version detection.
+            instrument_version: Override instrument version ('2016' or '2022').
+
+        Returns:
+            (X, y) in training mode; (X, None) in prediction mode.
+        """
+        df = normalize_target_aliases(df.copy())
+        target_col = normalize_column_name(target_col) if target_col else None
+
+        detection, instrument_dictionary = self._load_instrument_context(
+            df,
+            source_path=source_path,
+            instrument_version=instrument_version,
+        )
+
+        # In training mode, map ICD codes to WHO standardised causes before anything else
+        if target_col is not None:
+            df = self._apply_who_causelist_mapping(df)
+
+        # Feature selection
+        feature_columns, missing_dictionary_columns = self._get_feature_columns(df, instrument_dictionary)
+        if not feature_columns:
+            raise ValueError("No usable feature columns found for the detected instrument")
+
+        dfs = [df[feature_columns]]
+
+        # Non-feature columns carried through the pipeline for QC and audit
+        # (dropped from X before returning)
+        _NON_FEATURE = ['pcva_ucod_icd', 'pcva_who_major', 'pcva_who_broad', 'pcva_who_id']
+        passthrough_cols = [
+            col for col in _NON_FEATURE
+            if col in df.columns and col != target_col
+        ]
+        # Keep pcva_ucod_icd as quality_col for the ICD-consistency check
+        quality_columns = [col for col in ['pcva_ucod_icd'] if col in passthrough_cols]
+
         if target_col is not None:
             if target_col not in df.columns:
-                raise ValueError(f"Target column '{target_col}' not found in data")
-            full_df = pd.concat(dfs + [df[target_col]], axis=1)
+                raise ValueError(
+                    f"Target column '{target_col}' not found in data. "
+                    "If training with WHO standardised causes, ensure pcva_ucod_icd is present "
+                    "so map_causelist() can create 'pcva_who_cod' automatically."
+                )
+            full_df = pd.concat(dfs + [df[[target_col]]], axis=1)
+            if passthrough_cols:
+                full_df = pd.concat([full_df, df[passthrough_cols]], axis=1)
         else:
             full_df = pd.concat(dfs, axis=1)
 
-        # Apply filters only if we have a target column
         if target_col is not None:
-            clean_df = self._droprows_by_value_counts(full_df, target_col, self.min_vc)
-            clean_df = self._dropcols_by_threshold(clean_df, self.na_threshold)
+            clean_df, quality_report = self._apply_training_quality_filter(
+                full_df,
+                target_col=target_col,
+                quality_col=quality_columns[0] if quality_columns else None,
+            )
+            self.training_quality_report_ = quality_report
+
+            clean_df, rare_mapping, cluster_report = self._cluster_rare_causes(clean_df, target_col=target_col)
+            self.rare_label_mapping_ = rare_mapping
+            self.training_audit_report_ = self._build_training_audit_report(
+                initial_rows=len(full_df),
+                quality_report=quality_report,
+                quality_details=self.training_quality_report_.get('details', {}),
+                cluster_report=cluster_report,
+                final_rows=len(clean_df),
+                instrument_report={
+                    'detected_version': detection.get('version'),
+                    'detection_reason': detection.get('reason'),
+                    'version_scores': detection.get('scores', {}),
+                    'survey_columns': len(instrument_dictionary.get('survey', [])) if instrument_dictionary else 0,
+                    'feature_columns_used': feature_columns,
+                    'missing_dictionary_columns': missing_dictionary_columns,
+                    'source_file': instrument_dictionary.get('source_file') if instrument_dictionary else None,
+                },
+            )
+
+            clean_df = self._dropcols_by_threshold(clean_df, self.na_threshold, target_col=target_col)
             
             if self.verbose:
                 print(f"Before dropping NA\n{clean_df[target_col].value_counts()}") 
@@ -104,16 +270,354 @@ class DataPreprocessor:
                 clean_df = clean_df.loc[:, ~duplicates]
 
 
-        # Store the final columns used for training/prediction
-        self.final_training_columns = list(dict.fromkeys(
-            clean_df.drop(target_col, axis=1).columns if target_col is not None 
-            else clean_df.columns
-        ))
-        
-        return (
-            clean_df.drop(target_col, axis=1), 
-            clean_df[target_col] if target_col is not None else None
+        if target_col is not None:
+            # Drop target, ICD quality col, and all WHO meta cols — none are features
+            drop_columns = [
+                col for col in [target_col] + passthrough_cols
+                if col in clean_df.columns
+            ]
+            self.final_training_columns = list(dict.fromkeys(clean_df.drop(columns=drop_columns).columns))
+            y = clean_df[target_col].copy()
+            X = clean_df.drop(columns=drop_columns)
+        else:
+            self.final_training_columns = list(dict.fromkeys(clean_df.columns))
+            X = clean_df.copy()
+            y = None
+
+        return X, y
+
+    def _load_cause_taxonomy(self, taxonomy_path):
+        """Load the explicit cause-family taxonomy from disk."""
+        default_taxonomy = {
+            'default_cluster': 'cluster_other',
+            'unknown_patterns': ['unknown', 'unspecified', 'ill-defined', 'ill defined', 'symptom', 'signs and symptoms', 'cause of death unknown', 'not stated'],
+            'families': []
+        }
+
+        if taxonomy_path and Path(taxonomy_path).exists():
+            with open(taxonomy_path, 'r', encoding='utf-8') as handle:
+                taxonomy = json.load(handle)
+            taxonomy.setdefault('default_cluster', 'cluster_other')
+            taxonomy.setdefault('unknown_patterns', [])
+            taxonomy.setdefault('families', [])
+            return taxonomy
+
+        return default_taxonomy
+
+    def _apply_training_quality_filter(self, df, target_col='pcva_ucod', quality_col=None):
+        """Filter obvious low-quality labels and flag inconsistencies against ICD chapter knowledge."""
+        working = df.copy()
+        report = {
+            'dropped_missing_or_unknown': 0,
+            'qc_comparable_rows': 0,
+            'qc_agree_rows': 0,
+            'qc_mismatch_rows': 0,
+            'qc_kept_rows': 0,
+            'qc_dropped_rows': 0,
+            'details': {},
+        }
+
+        label_series = working[target_col].astype(str).str.strip()
+        unknown_patterns = self.taxonomy.get('unknown_patterns', [])
+        invalid_mask = (
+            label_series.eq('') |
+            label_series.str.lower().isin({'nan', 'none'}) |
+            label_series.str.contains('|'.join(re.escape(pattern) for pattern in unknown_patterns), case=False, na=False)
         )
+        report['dropped_missing_or_unknown'] = int(invalid_mask.sum())
+        if invalid_mask.any():
+            report['details']['filtered_missing_or_unknown'] = (
+                working.loc[invalid_mask, target_col]
+                .value_counts()
+                .rename_axis('cause')
+                .reset_index(name='count')
+                .to_dict('records')
+            )
+        working = working.loc[~invalid_mask].copy()
+
+        if quality_col and quality_col in working.columns:
+            icd_version = self._detect_icd_version(working[quality_col])
+            if self.verbose:
+                print(f"Detected ICD version for quality filter: ICD-{icd_version}")
+            label_family = working[target_col].apply(self._infer_cause_family_from_label)
+            icd_family = working[quality_col].apply(
+                lambda c: self._infer_icd_family(c, icd_version=icd_version)
+            )
+            self.label_family_mapping_ = pd.DataFrame({
+                target_col: working[target_col],
+                'label_family': label_family,
+                'icd_family': icd_family,
+            }, index=working.index).to_dict('index')
+
+            comparable = (
+                label_family.notna() &
+                icd_family.notna() &
+                ~label_family.isin({'other', 'review'}) &
+                ~icd_family.isin({'other', 'unknown'})
+            )
+            matched = comparable & (label_family == icd_family)
+            mismatched = comparable & ~matched
+
+            report['qc_comparable_rows'] = int(comparable.sum())
+            report['qc_agree_rows'] = int(matched.sum())
+            report['qc_mismatch_rows'] = int(mismatched.sum())
+
+            if mismatched.any():
+                mismatch_details = (
+                    working.loc[mismatched, [target_col, quality_col]]
+                    .assign(label_family=label_family[mismatched], icd_family=icd_family[mismatched])
+                    .groupby([target_col, 'label_family', 'icd_family'], dropna=False)
+                    .size()
+                    .reset_index(name='count')
+                    .sort_values('count', ascending=False)
+                )
+                report['details']['inconsistent_causes'] = mismatch_details.to_dict('records')
+
+            if self.use_quality_filter and mismatched.any():
+                working = working.loc[~mismatched].copy()
+
+            report['qc_kept_rows'] = int(len(working))
+            report['qc_dropped_rows'] = int(len(df) - len(working))
+
+        return working, report
+
+    def _build_training_audit_report(self, initial_rows, quality_report, quality_details, cluster_report, final_rows, instrument_report=None):
+        """Build a pre-training audit report that explains how records were filtered or clustered."""
+        report = {
+            'input_rows': int(initial_rows),
+            'rows_after_quality_filter': int(quality_report.get('qc_kept_rows', 0)),
+            'rows_after_clustering': int(cluster_report.get('rows_after_clustering', 0)),
+            'rows_final_for_training': int(final_rows),
+            'missing_or_unknown_labels': int(quality_report.get('dropped_missing_or_unknown', 0)),
+            'quality_mismatch_rows': int(quality_report.get('qc_mismatch_rows', 0)),
+            'quality_agree_rows': int(quality_report.get('qc_agree_rows', 0)),
+            'clustered_rare_labels': int(cluster_report.get('clustered_label_count', 0)),
+            'filtered_causes': quality_details.get('filtered_missing_or_unknown', []),
+            'inconsistent_causes': quality_details.get('inconsistent_causes', []),
+            'clustered_causes': cluster_report.get('clustered_causes', []),
+        }
+
+        if instrument_report:
+            report['instrument_context'] = instrument_report
+
+        return report
+
+    @staticmethod
+    def _detect_icd_version(icd_series):
+        """Return '10' or '11' based on the dominant coding pattern in the series."""
+        sample = icd_series.dropna().astype(str).head(50)
+        icd10_matches = sample.str.match(r'^[A-Z]\d{2}').sum()
+        return '10' if icd10_matches / max(len(sample), 1) > 0.5 else '11'
+
+    def _infer_icd_family(self, icd_code, icd_version=None):
+        """Map an ICD code to a broad disease family.
+
+        Accepts ICD-10 (e.g. 'A09', 'I50') and ICD-11 (e.g. '1F40.Y', 'KB21.0').
+        icd_version is inferred from the code format when not supplied.
+        """
+        if pd.isna(icd_code):
+            return None
+        code = str(icd_code).strip().upper()
+        if not code or code in {'NAN', 'NONE'}:
+            return None
+
+        # Auto-detect if not provided
+        if icd_version is None:
+            icd_version = '10' if re.match(r'^[A-Z]\d{2}', code) else '11'
+
+        if icd_version == '10':
+            return self._infer_icd10_family(code)
+        return self._infer_icd11_family(code)
+
+    def _infer_icd10_family(self, code):
+        """Map an ICD-10 code to a broad disease family."""
+        match = re.match(r'^([A-Z])(\d{2})', code)
+        if not match:
+            return None
+        letter = match.group(1)
+        chapter_number = int(match.group(2))
+
+        if letter in {'A', 'B'}:
+            return 'infectious'
+        if letter == 'C' or (letter == 'D' and chapter_number <= 48):
+            return 'neoplasms'
+        if letter == 'D' and chapter_number >= 50:
+            return 'blood'
+        if letter == 'E':
+            return 'endocrine'
+        if letter == 'F':
+            return 'mental'
+        if letter == 'G':
+            return 'neurological'
+        if letter == 'H':
+            return 'sensory'
+        if letter == 'I':
+            return 'cardiovascular'
+        if letter == 'J':
+            return 'respiratory'
+        if letter == 'K':
+            return 'digestive'
+        if letter == 'L':
+            return 'skin'
+        if letter == 'M':
+            return 'musculoskeletal'
+        if letter == 'N':
+            return 'genitourinary'
+        if letter == 'O':
+            return 'maternal'
+        if letter == 'P':
+            return 'perinatal'
+        if letter == 'Q':
+            return 'congenital'
+        if letter == 'R':
+            return 'symptoms'
+        if letter in {'S', 'T', 'V', 'W', 'X', 'Y'}:
+            return 'injury'
+        if letter == 'U':
+            return 'other'
+        return None
+
+    def _infer_icd11_family(self, code):
+        """Map an ICD-11 code to a broad disease family.
+
+        ICD-11 chapter prefixes (first character):
+          1-9  → chapters 1-9 (infectious, neoplasms, blood, immune, endocrine,
+                                mental, sleep, neurological, visual)
+          A    → ear/mastoid
+          B    → cardiovascular
+          C    → respiratory
+          D    → digestive
+          E    → skin
+          F    → musculoskeletal
+          G    → genitourinary
+          H    → sexual health
+          J    → maternal/obstetric
+          K    → perinatal
+          L    → congenital/developmental
+          M    → symptoms/signs
+          N    → injury
+          P    → external causes
+        """
+        _ICD11_MAP = {
+            '1': 'infectious',   '2': 'neoplasms',      '3': 'blood',
+            '4': 'immune',       '5': 'endocrine',       '6': 'mental',
+            '7': 'other',        '8': 'neurological',    '9': 'sensory',
+            'A': 'sensory',      'B': 'cardiovascular',  'C': 'respiratory',
+            'D': 'digestive',    'E': 'skin',             'F': 'musculoskeletal',
+            'G': 'genitourinary','H': 'other',            'J': 'maternal',
+            'K': 'perinatal',    'L': 'congenital',       'M': 'symptoms',
+            'N': 'injury',       'P': 'injury',           'Q': 'other',
+            'X': 'other',
+        }
+        if not code:
+            return None
+        return _ICD11_MAP.get(code[0])
+
+    def _infer_cause_family_from_label(self, label):
+        """Map a verbal autopsy cause label to a broad training family."""
+        text = str(label).strip().lower()
+        if not text or text in {'nan', 'none'}:
+            return None
+
+        if any(pattern in text for pattern in self.taxonomy.get('unknown_patterns', [])):
+            return 'review'
+
+        for family_rule in self.taxonomy.get('families', []):
+            family = family_rule.get('name')
+            keywords = family_rule.get('keywords', [])
+            if any(keyword in text for keyword in keywords):
+                return family
+
+        return 'other'
+
+    def _who_cluster_label(self, cause_label: str, who_meta: dict) -> str:
+        """Derive a cluster label for a rare cause using the WHO hierarchy.
+
+        Priority:
+          1. pcva_who_major  (e.g. "Infectious and parasitic diseases" → cluster_infectious_and_parasitic_diseases)
+          2. pcva_who_broad  (e.g. "Communicable" → cluster_communicable)
+          3. Text-keyword fallback via _infer_cause_family_from_label
+        """
+        meta = who_meta.get(cause_label, {})
+        for key in ('pcva_who_major', 'pcva_who_broad'):
+            val = str(meta.get(key, '') or '').strip()
+            if val and val.lower() not in ('nan', 'none', ''):
+                slug = re.sub(r'[^a-z0-9]+', '_', val.lower()).strip('_')
+                return f'cluster_{slug}'
+
+        family = self._infer_cause_family_from_label(cause_label)
+        if family in {None, 'review'}:
+            family = 'other'
+        return f'cluster_{family}'
+
+    def _cluster_rare_causes(self, df, target_col='pcva_who_cod'):
+        """Collapse sparse causes into WHO-hierarchy cluster groups before training.
+
+        Uses pcva_who_major / pcva_who_broad (if present in df) to derive cluster
+        labels, so clusters align with the same WHO cause hierarchy used for mapping.
+        Falls back to text-keyword inference when WHO metadata is not available.
+        """
+        if target_col not in df.columns:
+            return df.copy(), {}, {'clustered_label_count': 0, 'clustered_causes': [], 'rows_after_clustering': len(df)}
+
+        working = df.copy()
+        counts = working[target_col].value_counts(dropna=False)
+        rare_labels = [label for label in counts[counts < self.min_vc].index if pd.notna(label)]
+
+        if not rare_labels:
+            return working, {}, {'clustered_label_count': 0, 'clustered_causes': [], 'rows_after_clustering': len(working)}
+
+        # Build a per-cause WHO metadata lookup (one row per unique cause label)
+        who_meta_cols = [c for c in ('pcva_who_major', 'pcva_who_broad') if c in working.columns]
+        if who_meta_cols:
+            who_meta = (
+                working[[target_col] + who_meta_cols]
+                .dropna(subset=[target_col])
+                .drop_duplicates(subset=[target_col])
+                .set_index(target_col)
+                .to_dict('index')
+            )
+        else:
+            who_meta = {}
+
+        cluster_map = {}
+        cluster_summary = []
+        for label in sorted(rare_labels):
+            cluster_label = self._who_cluster_label(str(label), who_meta)
+            cluster_map[str(label)] = cluster_label
+            cluster_summary.append({
+                'cause': str(label),
+                'count': int(counts.get(label, 0)),
+                'cluster': cluster_label,
+            })
+            working.loc[working[target_col] == label, target_col] = cluster_label
+
+        # Second sweep: any label that still has < 2 records after clustering
+        # (e.g. a cluster that received only one rare cause with one record)
+        # cannot be used in a stratified split — merge into cluster_other.
+        post_counts = working[target_col].value_counts(dropna=False)
+        tiny_labels = [label for label in post_counts[post_counts < 2].index if pd.notna(label)]
+        for label in tiny_labels:
+            cluster_map[str(label)] = 'cluster_other'
+            working.loc[working[target_col] == label, target_col] = 'cluster_other'
+            cluster_summary.append({
+                'cause': str(label),
+                'count': int(post_counts.get(label, 0)),
+                'cluster': 'cluster_other',
+                'reason': 'post-cluster singleton',
+            })
+
+        if self.verbose:
+            print("Rare cause clustering applied (WHO hierarchy):")
+            for original, cluster_label in list(cluster_map.items())[:20]:
+                print(f"  {original!r} → {cluster_label}")
+            print(f"  Classes after clustering: {working[target_col].nunique()}")
+
+        return working, cluster_map, {
+            'clustered_label_count': len(cluster_map),
+            'clustered_causes': cluster_summary,
+            'rows_after_clustering': len(working),
+        }
     
     
         # 'Malaria': ['id10077','id10126','id10127','id10128','id10130','id10131','id10133','id10134','id10135','id10136','id10137',
@@ -160,14 +664,14 @@ class DataPreprocessor:
     
 
     def _drop_na_columns(self, dataframe:pd.DataFrame, th:float=0.7):
-        return dataframe.dropna(thresh = 0.7*len(dataframe), axis=1)  # Drop columns with more than 70% NA values
+        return dataframe.dropna(thresh = th * len(dataframe), axis=1)  # Drop columns with more than 70% NA values
 
-    def _dropcols_by_threshold(self, df, th:float=0.7):
-        cod_dfs = {cod: df[df['cod_who_ucod'] == cod] for cod in df['cod_who_ucod'].unique()}
+    def _dropcols_by_threshold(self, df, th:float=0.7, target_col='pcva_ucod'):
+        cod_dfs = {cod: df[df[target_col] == cod] for cod in df[target_col].dropna().unique()}
 
         temp_df = []
         for cod in cod_dfs:
-            cod_na_dropped = self._drop_na_columns(cod_dfs[cod])
+            cod_na_dropped = self._drop_na_columns(cod_dfs[cod], th)
             if self.verbose:
                 print(f"Dataframe: {cod}, Shape before dropping NA: {cod_dfs[cod].shape}, Shape after dropping NA: {cod_na_dropped.shape}")
             temp_df.append(cod_na_dropped)
@@ -235,26 +739,26 @@ class DataPreprocessor:
         
         return full_df, encoders
     
-    def _scale_features(self, X):
-        """Scale features while preserving column names"""
+    def _scale_features(self, X, fit=True):
+        """Scale features while preserving column names.
+
+        fit=True (default) for training; fit=False to transform with an already-fitted scaler.
+        """
         if not hasattr(self, 'scaler'):
             self.scaler = StandardScaler()
-        
-        # Convert to DataFrame if it isn't already
+
         if isinstance(X, np.ndarray):
             if not hasattr(self, 'feature_names_in_'):
                 raise ValueError("Can't scale numpy array without feature names")
             X = pd.DataFrame(X, columns=self.feature_names_in_)
-        
-        # Scale and return as DataFrame
-        X_scaled = self.scaler.fit_transform(X)
 
-        # Check and remove duplicates
+        X_scaled = self.scaler.fit_transform(X) if fit else self.scaler.transform(X)
+
         scaled_df = pd.DataFrame(X_scaled, columns=X.columns)
         duplicates = scaled_df.columns.duplicated()
         if duplicates.any():
-                print(f"Warning: The following columns were found/created and removed while preparing the training dataset: {scaled_df.columns[duplicates].tolist()}")
-                scaled_df = scaled_df.loc[:, ~duplicates]
+            print(f"Warning: The following columns were found/created and removed while preparing the training dataset: {scaled_df.columns[duplicates].tolist()}")
+            scaled_df = scaled_df.loc[:, ~duplicates]
 
         return scaled_df, self.scaler
     

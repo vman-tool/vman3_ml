@@ -1,5 +1,5 @@
 # VMan3 Machine Learning Model
-This is VMan3 Machine Learning model for predicting CoD. This model uses the WHO 2016 Questionnaire standard 
+This is VMan3 Machine Learning model for predicting CoD. The training and prediction flow now auto-detects the WHO VA instrument version and routes to the matching model artifact.
 
 ## Train
 ```
@@ -10,7 +10,7 @@ This is VMan3 Machine Learning model for predicting CoD. This model uses the WHO
 % python3 train.py --input '/Users/ilyatuu/Documents/coding/vman3/datascience/va_for_ai.csv' --verbose --min_vc 200
 ````
 ### Note
-Target column should be labelled ```cod_who_ucod```
+Target column should be labelled `pcva_ucod`. The ICD consistency field is `pcva_ucod_icd`.
 
 ## Predict
 ```

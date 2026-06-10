@@ -2,126 +2,182 @@ import joblib
 import pandas as pd
 import numpy as np
 
+
 class CCVAPredictor:
-    def __init__(self, model_path='models/ccva_model.pkl'):
-        """Load trained model and preprocessing objects"""
+    def __init__(self, model_path='models/ccva_model.pkl', verbose=False):
+        """Load trained model and all preprocessing objects from a saved artifact."""
         artifacts = joblib.load(model_path)
         self.model = artifacts['model']
         self.scaler = artifacts['scaler']
         self.label_encoder = artifacts['label_encoder']
         self.feature_encoders = artifacts['feature_encoders']
-        self.original_classes = artifacts['original_classes']
+        self.preprocessor = artifacts['preprocessor']
+        self.original_classes = set(artifacts['original_classes'])
         self.ood_threshold = artifacts.get('ood_threshold')
+        self.dk_threshold = artifacts.get('dk_threshold', 0.5)
+        self.instrument_version = artifacts.get('instrument_version')
+        self.verbose = verbose
+        self.expected_columns = list(self.preprocessor.final_training_columns)
 
-        # Validate threshold
-        if self.ood_threshold is not None:
-            if not (0 < self.ood_threshold < 1):
-                print(f"WARNING: Invalid OOD threshold {self.ood_threshold}. Resetting to None")
-                self.ood_threshold = None
+        if self.ood_threshold is not None and not (0 < self.ood_threshold < 1):
+            print(f"WARNING: Unusual OOD threshold {self.ood_threshold:.4f} — disabling OOD filter.")
+            self.ood_threshold = None
 
-        # Validation
-        self.original_classes = set(artifacts['original_classes'])  # Ensure it's a set
-        self.label_classes = set(self.label_encoder.classes_)
+        label_classes = set(self.label_encoder.classes_)
+        if self.original_classes != label_classes:
+            print("WARNING: original_classes don't match label encoder classes")
 
-        if self.original_classes != self.label_classes:
-            print("WARNING: Original classes don't match label encoder classes")
-            print(f"Original: {self.original_classes}")
-            print(f"Encoder: {self.label_classes}")
-    
-    def predict(self, new_data):
-        """Make predictions with OOD detection"""
-        try:
-            processed = self._preprocess_data(new_data.copy())
-            encoded = self._encode_features(processed)
+        if self.verbose:
+            print(f"Model loaded: {len(self.expected_columns)} features, "
+                  f"{len(self.original_classes)} classes, "
+                  f"OOD threshold={self.ood_threshold}, "
+                  f"DK threshold={self.dk_threshold}")
 
-            if encoded.shape[1] != self.scaler.n_features_in_:
-                raise ValueError(
-                    f"Input has {encoded.shape[1]} features, "
-                    f"but scaler expects {self.scaler.n_features_in_}"
+    def _validate_columns(self, df):
+        """Check if all expected columns are present."""
+        missing = [col for col in self.expected_columns if col not in df.columns]
+        extra   = [col for col in df.columns if col not in self.expected_columns]
+        if missing:
+            print(f"WARNING: Missing {len(missing)} columns used in training: {missing[:10]}")
+        if extra and self.verbose:
+            print(f"Note: {len(extra)} additional columns not used in training")
+        return len(missing) == 0
+
+    def _apply_encoders(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Apply the saved training-time encoders to a feature DataFrame.
+
+        Uses the encoders fitted during training (stored in self.feature_encoders)
+        so that categorical values are mapped to the same integer codes the model
+        learned on.  Unseen category values are mapped to the 'dk' sentinel (or
+        the first known class when 'dk' is absent).
+        """
+        X = X.copy()
+        for col, encoder in self.feature_encoders.items():
+            if col not in X.columns:
+                continue
+            col_data = X[col].astype(str).replace({'nan': 'dk', '': 'dk', ' ': 'dk'})
+            if isinstance(encoder, dict):
+                # Hardcoded yes/no/dk mapping — deterministic, no unseen-value risk
+                X[col] = col_data.map(encoder).fillna(-1).astype(float)
+            else:
+                # LabelEncoder fitted on training data — transform only, never refit
+                known    = set(encoder.classes_)
+                fallback = 'dk' if 'dk' in known else encoder.classes_[0]
+                X[col]   = encoder.transform(
+                    col_data.apply(lambda v: v if v in known else fallback)
                 )
-            
-            scaled = self.scaler.transform(encoded)
-            
-            # Get predictions and confidence
+        # Any remaining object columns not covered by saved encoders
+        for col in X.select_dtypes(include=['object']).columns:
+            X[col] = pd.factorize(X[col])[0]
+        return X
+
+    def predict(self, cleaned_df):
+        """Make predictions with DK-ratio and OOD confidence thresholding."""
+        try:
+            cleaned_df = cleaned_df.copy()
+
+            # Fill NA before computing dk_ratio so the ratio reflects actual missingness
+            for col in self.feature_encoders:
+                if col in cleaned_df.columns:
+                    if pd.api.types.is_string_dtype(cleaned_df[col]):
+                        cleaned_df[col] = cleaned_df[col].fillna('dk').replace({'': 'dk'})
+                    else:
+                        cleaned_df[col] = cleaned_df[col].fillna(-999)
+
+            dk_ratios   = (cleaned_df == 'dk').mean(axis=1)
+            dk_ood_mask = dk_ratios > self.dk_threshold
+            if self.verbose and dk_ood_mask.any():
+                print(f"DK-OOD: {dk_ood_mask.sum()} records exceed "
+                      f"DK threshold ({self.dk_threshold:.0%})")
+
+            # Feature selection using the saved preprocessor (prediction mode, no target)
+            X_raw, _ = self.preprocessor._prepare_training_data(
+                cleaned_df,
+                target_col=None,
+                instrument_version=self.instrument_version,
+            )
+
+            # Encode using the SAVED training encoders (not re-fitted ones)
+            encoded = self._apply_encoders(X_raw)
+
+            # Align to the exact column order the scaler was fitted on.
+            # _encode_features reorders columns (numeric first, then object), so
+            # scaler.feature_names_in_ differs from final_training_columns order.
+            encoded = encoded.reindex(columns=self.scaler.feature_names_in_, fill_value=0)
+            scaled  = self.scaler.transform(encoded)
+
             if hasattr(self.model, 'predict_proba'):
-                probs = self.model.predict_proba(scaled)
+                probs      = self.model.predict_proba(scaled)
                 predictions = self.model.classes_[np.argmax(probs, axis=1)]
-                confidence = np.max(probs, axis=1)
-                ood_mask = confidence < self.ood_threshold if self.ood_threshold else np.zeros_like(confidence, dtype=bool)
+                confidence  = np.max(probs, axis=1)
+                ood_mask    = (
+                    (confidence < self.ood_threshold)
+                    if self.ood_threshold is not None
+                    else np.zeros(len(predictions), dtype=bool)
+                )
+                if self.verbose:
+                    print(f"Confidence — min={confidence.min():.3f}, "
+                          f"median={np.median(confidence):.3f}, "
+                          f"max={confidence.max():.3f}, "
+                          f"OOD threshold={self.ood_threshold}")
             else:
                 predictions = self.model.predict(scaled)
-                ood_mask = np.zeros(len(predictions), dtype=bool)
-            
-            # Label OOD samples
+                ood_mask    = np.zeros(len(predictions), dtype=bool)
+
+            final_ood_mask = ood_mask | dk_ood_mask.values
             decoded = self.label_encoder.inverse_transform(predictions)
-            decoded[ood_mask] = 'out_of_distribution'
+            decoded[final_ood_mask] = 'out_of_distribution'
+            # Catch any label that somehow fell outside the known class set
+            valid = set(self.original_classes) | {'out_of_distribution'}
+            decoded[~np.isin(decoded, list(valid))] = 'out_of_distribution'
 
-            # Additional validation for unexpected classes
-            valid_classes = set(self.original_classes) | {'out_of_distribution'}
-            decoded[~np.isin(decoded, list(valid_classes))] = 'UNKNOWN'
-            
+            if self.verbose:
+                n_ood = final_ood_mask.sum()
+                print(f"Predictions: {len(decoded) - n_ood} classified, {n_ood} OOD")
+
             return decoded
+
         except Exception as e:
-            print(f"Prediction error: {str(e)}")
-            return np.array(['UNKNOWN'] * len(new_data))
+            import traceback
+            print(f"Prediction error: {e}")
+            traceback.print_exc()
+            return np.array(['PREDICTION_ERROR'] * len(cleaned_df))
 
-    def _preprocess_data(self, df):
-        """Validate features before prediction"""
-        # Check for required columns
-        required_cols = set(self.feature_encoders.keys())
-        missing_cols = required_cols - set(df.columns)
-        if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
-        
-        # Standardize column names
-        df.columns = df.columns.str.lower().str.replace(r'[\s/]', '_')
+    def generate_data_quality_report(self, df):
+        """Generate a report on data quality issues in the input DataFrame."""
+        report = {
+            'missing_columns': list(set(self.expected_columns) - set(df.columns)),
+            'empty_columns': [],
+            'type_mismatches': [],
+            'problematic_records': {},
+            'dk_stats': {
+                'total_dk': 0,
+                'columns_with_dk': [],
+                'records_with_dk': 0,
+            },
+        }
 
-        available_cols = [col for col in df.columns if col in required_cols]
-        return df[available_cols]
-    
-    
-    def _validate_input_data(self, df):
-        """Comprehensive data quality checks before prediction"""
-        errors = []
-        warnings = []
-        
-        # 1. Check column presence
-        missing_cols = set(self.expected_columns) - set(df.columns)
-        if missing_cols:
-            errors.append(f"Missing columns: {missing_cols}")
-        
-        # 2. Check data types
-        for col in self.feature_encoders.keys():
-            if col in df.columns:
-                if not pd.api.types.is_string_dtype(df[col]) and not pd.api.types.is_numeric_dtype(df[col]):
-                    warnings.append(f"Column {col} has unexpected dtype: {df[col].dtype}")
-        
-        # 3. Check for empty/NA columns
-        empty_cols = []
-        for col in self.feature_encoders.keys():
-            if col in df.columns:
-                if df[col].isna().all() or df[col].eq('').all():
-                    empty_cols.append(col)
-        if empty_cols:
-            warnings.append(f"Completely empty columns: {empty_cols}")
-        
-        # 4. Check for problematic values
-        problematic_records = {}
-        for col in self.feature_encoders.keys():
-            if col in df.columns:
-                # Check for non-string values in categorical columns
-                if col in self.feature_encoders and not pd.api.types.is_string_dtype(df[col]):
-                    problematic_records[col] = df[~df[col].astype(str).str.isalnum()].index.tolist()
-        
-        if problematic_records:
-            warnings.append(f"Potential problematic values in columns: {problematic_records}")
-        
-        # Return or raise errors
-        if errors:
-            raise ValueError("\n".join(errors))
-        
-        if warnings and self.verbose:
-            print("\nData Quality Warnings:")
-            print("\n".join(warnings))
-        
-        return True
+        for col in self.expected_columns:
+            if col not in df.columns:
+                continue
+
+            try:
+                is_empty = bool(df[col].isna().all()) or bool(df[col].eq('').all())
+            except Exception:
+                is_empty = False
+
+            if is_empty:
+                report['empty_columns'].append(col)
+
+            if col in self.feature_encoders and not pd.api.types.is_string_dtype(df[col]):
+                report['type_mismatches'].append(col)
+
+            if col in self.feature_encoders:
+                try:
+                    mask = ~df[col].astype(str).str.match(r'^[\w\s-]+$')
+                    if mask.any():
+                        report['problematic_records'][col] = df.loc[mask, col].unique().tolist()
+                except Exception:
+                    report['problematic_records'][col] = ['ERROR_CHECKING_VALUES']
+
+        return report
