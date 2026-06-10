@@ -80,7 +80,11 @@ settings.json
 .pyodk_cache.toml
 
 
+# Python virtual environments
+env/
+ENV/
 venv
+venv/
 virtualenv
 virtual_env
 vman_env
@@ -90,5 +94,13 @@ vmanenv
 .vman_env
 .vmanenv
 .venv
-.csv
+.venv/
+
+# Data and large files
+*.csv
+*.json
 *.xlsx
+data/
+
+# IDE files
+.DS_Store
