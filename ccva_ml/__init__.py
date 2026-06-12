@@ -2,6 +2,11 @@
 from .processing import DataPreprocessor
 from .training import ModelTrainer
 from .prediction import CCVAPredictor
-from .mapcauselist import map_causelist
+from .mapcauselist import map_causelist, map_ucod_text_to_who
+from .narrative import NarrativeEmbedder
 
-__all__ = ['DataPreprocessor', 'ModelTrainer', 'CCVAPredictor', 'map_causelist']
+__all__ = [
+    'DataPreprocessor', 'ModelTrainer', 'CCVAPredictor',
+    'map_causelist', 'map_ucod_text_to_who',
+    'NarrativeEmbedder',
+]

@@ -3,16 +3,23 @@ This is VMan3 Machine Learning model for predicting CoD. The training and predic
 
 ## Train
 ```
-% python3 train.py --input '/Users/ilyatuu/Documents/coding/vman3/datascience/va_for_ai.csv' --verbose
+% python3 train.py \
+    --input data/va_2016_tz.csv data/va_2022_ng.csv data/va_2022_es.csv \
+    --verbose
+
 ```
 ### Add more options
 ```
-% python3 train.py --input '/Users/ilyatuu/Documents/coding/vman3/datascience/va_for_ai.csv' --verbose --min_vc 200
+% python3 train.py \
+--input data/va_2016_tz.csv data/va_2022_ng.csv data/va_2022_es.csv \
+--verbose \
+--min_vc 50
+
 ````
 ### Note
 Target column should be labelled `pcva_ucod`. The ICD consistency field is `pcva_ucod_icd`.
 
 ## Predict
 ```
-% python3 predict.py --model 'models/ccva_model.pkl' --input test1.csv --output results.csv --verbose
+% python3 predict.py --model 'models/ccva_model.pkl' --input va_test.csv --output results.csv --verbose
 ```

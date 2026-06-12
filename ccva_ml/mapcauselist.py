@@ -1,23 +1,29 @@
 """
 PCVA to WHO VA Cause-List Mapping
 ===================================
-Primary API  : map_causelist(df, ...)   — enriches a DataFrame in-place with
-               four WHO standardised columns and returns the updated DataFrame.
-Audit API    : export_mapping_excel(df, ...) — writes a two-sheet audit workbook.
+Primary API  : map_causelist(df, ...)         — ICD-code-based mapping (TZ, NG).
+               map_ucod_text_to_who(df, ...)  — text-label-based mapping (ES).
+Audit API    : export_mapping_excel(df, ...) — two-sheet audit workbook.
 CLI          : python -m ccva_ml.mapcauselist --who <path> --input <csv> [--output <xlsx>]
 
-WHO columns added by map_causelist():
+WHO columns added by both mapping functions:
   pcva_who_cod    – WHO target cause label  (e.g. "Malaria")
   pcva_who_id     – WHO VAS ID              (e.g. "VAs-01.05")
   pcva_who_major  – WHO Major Cause group   (e.g. "Infectious and parasitic diseases")
   pcva_who_broad  – WHO Broad Group         (e.g. "Communicable")
 
-Matching order per ICD code:
+map_causelist() matching order (ICD codes):
   1. Manual review overrides   (clinically curated look-up table)
   2. Exact match               (full code including sub-code)
   3. Base match                (stem before the dot, e.g. KB21.0 → KB21)
   4. Partial match             (prefix overlap in either direction)
   5. Range match               (code falls within a WHO range, e.g. 1F40–1F4Z)
+
+map_ucod_text_to_who() matching order (text labels, e.g. Eswatini):
+  1. Hard overrides            (known abbreviations / alternate spellings)
+  2. Exact normalised match    (case-insensitive, whitespace-collapsed)
+  3. WHO title starts-with     (handles WHO footnote suffixes, e.g. "Tetanusa")
+  4. Label starts-with WHO     (handles appended qualifiers, e.g. "Severe anaemia (iron deficiency)")
 """
 
 from __future__ import annotations
@@ -234,6 +240,121 @@ def _match_code(
             return vas_id, title, method
 
     return 'UNMATCHED', None, 'Unmatched'
+
+
+# ---------------------------------------------------------------------------
+# Text-label matching (for datasets without ICD codes, e.g. Eswatini)
+# ---------------------------------------------------------------------------
+
+# Hard overrides for ES labels that can't be matched by prefix rules alone.
+# Key: normalised source label.  Value: (WHO VAS ID, WHO target cause title).
+_TEXT_UCOD_OVERRIDES: dict[str, tuple[str, str]] = {
+    'covid-19':                   ('VAs-01.13', 'Coronavirus disease (COVID19)'),
+    'chronic obstructive (copd)': ('VAs-05.01', 'Chronic obstructive pulmonary disease (COPD)'),
+}
+
+
+def _normalize_cause_label(text: str) -> str:
+    """Lowercase, strip, collapse whitespace."""
+    return re.sub(r'\s+', ' ', str(text).strip()).lower()
+
+
+def map_ucod_text_to_who(
+    df: pd.DataFrame,
+    ucod_col: str = 'pcva_ucod',
+    who_path=None,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """Match pcva_ucod text labels to WHO VAS target causes by normalised string matching.
+
+    Designed for datasets (e.g. Eswatini) that already use WHO-compatible cause
+    labels in pcva_ucod but lack pcva_ucod_icd.
+
+    Matching order per unique label:
+      1. Hard override  (_TEXT_UCOD_OVERRIDES — known abbreviations/alternate spellings)
+      2. Exact match    (after lowercasing and whitespace normalisation)
+      3. WHO-starts-with-label  (handles WHO footnote suffixes: "Tetanusa" → "Tetanus")
+      4. Label-starts-with-WHO  (handles extra qualifiers: "Severe anaemia (iron deficiency)")
+
+    Unmatched labels receive None in all four WHO columns and are filtered by
+    the training quality filter as unknown causes.
+    """
+    if ucod_col not in df.columns:
+        return df
+
+    who_df = _load_who_causelist(who_path)
+
+    # Build normalised WHO lookup: norm_title → (vas_id, title, major, broad)
+    who_lookup: dict[str, tuple[str, str, str, str]] = {}
+    for _, row in who_df.iterrows():
+        norm = _normalize_cause_label(row['who_title'])
+        who_lookup[norm] = (
+            row['vas_id'],
+            str(row['who_title']).strip(),
+            str(row.get('WHO Major Cause', '') or '').strip(),
+            str(row.get('Broad Group',     '') or '').strip(),
+        )
+
+    # Build override lookup: vas_id → full row tuple
+    override_by_id: dict[str, tuple[str, str, str, str]] = {
+        vas_id: next(
+            (v for v in who_lookup.values() if v[0] == vas_id),
+            (vas_id, title, '', ''),
+        )
+        for _, (vas_id, title) in _TEXT_UCOD_OVERRIDES.items()
+    }
+
+    def _match(label: str) -> tuple[str | None, str | None, str | None, str | None]:
+        if pd.isna(label):
+            return None, None, None, None
+        norm = _normalize_cause_label(label)
+
+        # 1. Hard override
+        if norm in _TEXT_UCOD_OVERRIDES:
+            vas_id, _ = _TEXT_UCOD_OVERRIDES[norm]
+            return override_by_id.get(vas_id, (vas_id, None, None, None))
+
+        # 2. Exact
+        if norm in who_lookup:
+            return who_lookup[norm]
+
+        # 3. WHO title starts with label (e.g. "Acute cardiac disease" ~ "Acute cardiac diseasec")
+        for wn, row_tuple in who_lookup.items():
+            if wn.startswith(norm) and len(wn) - len(norm) <= 5:
+                return row_tuple
+
+        # 4. Label starts with WHO title (e.g. "Severe anaemia (iron deficiency)" ~ "Severe anaemia")
+        for wn, row_tuple in who_lookup.items():
+            if len(wn) >= 6 and norm.startswith(wn):
+                return row_tuple
+
+        return None, None, None, None
+
+    rows = []
+    for label in df[ucod_col].unique():
+        vid, wt, wmaj, wbro = _match(label)
+        rows.append({
+            ucod_col:         label,
+            'pcva_who_cod':   wt,
+            'pcva_who_id':    vid,
+            'pcva_who_major': wmaj,
+            'pcva_who_broad': wbro,
+        })
+
+    lookup_df = pd.DataFrame(rows)
+    who_cols  = ['pcva_who_cod', 'pcva_who_id', 'pcva_who_major', 'pcva_who_broad']
+    df = df.drop(columns=[c for c in who_cols if c in df.columns]).copy()
+    df = df.merge(lookup_df, on=ucod_col, how='left')
+
+    if verbose:
+        mapped   = df['pcva_who_cod'].notna().sum()
+        total    = len(df)
+        unmatched = lookup_df[lookup_df['pcva_who_cod'].isna()][ucod_col].tolist()
+        print(f"WHO text mapping: {mapped}/{total} rows mapped ({mapped/total:.1%})")
+        if unmatched:
+            print(f"  Unmatched labels ({len(unmatched)}): {unmatched}")
+
+    return df
 
 
 # ---------------------------------------------------------------------------

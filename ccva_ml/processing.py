@@ -16,7 +16,8 @@ from .instrument_dictionary import (
     normalize_target_aliases,
     select_feature_columns,
 )
-from .mapcauselist import map_causelist
+from .mapcauselist import map_causelist, map_ucod_text_to_who
+from .narrative import NARRATIVE_COLS, NarrativeEmbedder, HAS_SENTENCE_TRANSFORMERS
 
 class DataPreprocessor:
     def __init__(self, verbose=False, min_vc=130, na_threshold=0.7, use_quality_filter=True, taxonomy_path=None, instrument_version=None):
@@ -35,7 +36,13 @@ class DataPreprocessor:
         self.rare_label_mapping_ = {}
         self.label_family_mapping_ = {}
         self.source_path = None
-        
+        self.training_instrument_versions_ = []
+        self.union_feature_columns_ = None
+        self.narrative_dims_ = 0
+        self.narrative_embedder = (
+            NarrativeEmbedder(verbose=verbose) if HAS_SENTENCE_TRANSFORMERS else None
+        )
+
     def load_data(self, file_path):
         """Load and preprocess raw data"""
         self.source_path = str(file_path)
@@ -107,12 +114,22 @@ class DataPreprocessor:
         return selected, []
     
     def _apply_who_causelist_mapping(self, df):
-        """Add WHO standardised cause columns by mapping pcva_ucod_icd.
+        """Add WHO standardised cause columns, choosing the right mapping path.
 
-        Adds: pcva_who_cod, pcva_who_id, pcva_who_major, pcva_who_broad.
-        Skips silently when pcva_ucod_icd is absent.
+        Priority:
+          1. pcva_who_cod already present (e.g. NG pre-mapped data) → skip.
+          2. pcva_ucod_icd present → ICD-based mapping via map_causelist().
+          3. pcva_ucod present → text-label matching via map_ucod_text_to_who().
         """
-        return map_causelist(df, icd_col='pcva_ucod_icd', verbose=self.verbose)
+        if 'pcva_who_cod' in df.columns:
+            return df
+        if 'pcva_ucod_icd' in df.columns:
+            return map_causelist(df, icd_col='pcva_ucod_icd', verbose=self.verbose)
+        if 'pcva_ucod' in df.columns:
+            return map_ucod_text_to_who(df, ucod_col='pcva_ucod', verbose=self.verbose)
+        if self.verbose:
+            print("Warning: no ICD or ucod column found — skipping WHO cause mapping.")
+        return df
 
     def align_to_version(self, df, source_version, target_version):
         """Project a DataFrame from source_version feature space into target_version feature space.
@@ -161,15 +178,108 @@ class DataPreprocessor:
             )
         return aligned
 
-    def _prepare_training_data(self, df, target_col='pcva_who_cod', source_path=None, instrument_version=None):
+    def combine_datasets(
+        self,
+        dataset_specs,
+    ) -> tuple[pd.DataFrame, list[str], list[str]]:
+        """Load, preprocess, WHO-map and feature-align multiple datasets.
+
+        Each dataset is processed with its own instrument version (auto-detected
+        from filename / column overlap).  Feature columns from all versions are
+        unioned; records missing a version-specific column receive the 'dk'
+        sentinel so the model can learn the absence pattern.
+
+        Args:
+            dataset_specs: iterable of paths (str/Path) OR dicts with keys
+                           'path' (required) and 'version' (optional override).
+
+        Returns:
+            combined_df:           All records stacked with union feature set.
+            versions_used:         Deduplicated ordered list of detected versions.
+            union_feature_columns: Ordered union of feature columns across all datasets.
+        """
+        records: list[tuple[pd.DataFrame, str, list[str]]] = []
+        versions_seen: list[str] = []
+
+        for spec in dataset_specs:
+            if isinstance(spec, (str, Path)):
+                path, version_hint = str(spec), None
+            else:
+                path = str(spec['path'])
+                version_hint = spec.get('version')
+
+            df = self.load_data(path)
+            df = self._preprocess_data(df)
+
+            detection, instrument_dictionary = self._load_instrument_context(
+                df, source_path=path, instrument_version=version_hint,
+            )
+            version = detection['version']
+            versions_seen.append(version)
+
+            # WHO target mapping — handles ICD (TZ/NG), text labels (ES), pre-mapped (NG)
+            df = self._apply_who_causelist_mapping(df)
+
+            feature_columns, _ = self._get_feature_columns(df, instrument_dictionary)
+
+            # Carry feature columns + WHO passthrough + narrative text side-by-side
+            passthrough = [
+                c for c in ['pcva_who_cod', 'pcva_ucod_icd',
+                             'pcva_who_major', 'pcva_who_broad', 'pcva_who_id']
+                            + NARRATIVE_COLS
+                if c in df.columns
+            ]
+            keep = list(dict.fromkeys(feature_columns + passthrough))
+            records.append((df[keep].copy(), version, feature_columns))
+
+            if self.verbose:
+                print(f"  Loaded {path}: version={version}, "
+                      f"{len(df)} rows, {len(feature_columns)} features")
+
+        # Ordered union of feature columns (first-seen version comes first)
+        union_features: list[str] = []
+        seen_cols: set[str] = set()
+        for _, _, feat_cols in records:
+            for col in feat_cols:
+                if col not in seen_cols:
+                    seen_cols.add(col)
+                    union_features.append(col)
+
+        # Align each dataset to the full union (fill absent version cols with 'dk')
+        aligned: list[pd.DataFrame] = []
+        for df_slice, _, _ in records:
+            missing = [c for c in union_features if c not in df_slice.columns]
+            if missing:
+                df_slice = df_slice.copy()
+                for col in missing:
+                    df_slice[col] = 'dk'
+            aligned.append(df_slice)
+
+        combined_df   = pd.concat(aligned, axis=0, ignore_index=True)
+        versions_used = list(dict.fromkeys(versions_seen))
+
+        if self.verbose:
+            print(f"combine_datasets: {len(records)} datasets "
+                  f"({', '.join(versions_used)}) → "
+                  f"{len(combined_df)} rows, {len(union_features)} union features")
+
+        return combined_df, versions_used, union_features
+
+    def _prepare_training_data(self, df, target_col='pcva_who_cod', source_path=None, instrument_version=None,
+                               preselected_feature_columns=None):
         """Prepare features and optionally target for training/prediction.
 
         Args:
-            df:                 Input DataFrame.
-            target_col:         Target column name. Default 'pcva_who_cod' (WHO standardised
-                                cause mapped from pcva_ucod_icd). Pass None for prediction mode.
-            source_path:        Path hint used for instrument version detection.
-            instrument_version: Override instrument version ('2016' or '2022').
+            df:                          Input DataFrame.
+            target_col:                  Target column name. Default 'pcva_who_cod'.
+                                         Pass None for prediction mode.
+            source_path:                 Path hint used for instrument version detection.
+            instrument_version:          Override instrument version ('2016', '2022', or
+                                         'combined' when multi-dataset training).
+            preselected_feature_columns: When provided (multi-dataset mode), skip
+                                         instrument detection and feature selection and
+                                         use this list directly.  combine_datasets()
+                                         passes the union feature set here.
 
         Returns:
             (X, y) in training mode; (X, None) in prediction mode.
@@ -177,20 +287,33 @@ class DataPreprocessor:
         df = normalize_target_aliases(df.copy())
         target_col = normalize_column_name(target_col) if target_col else None
 
-        detection, instrument_dictionary = self._load_instrument_context(
-            df,
-            source_path=source_path,
-            instrument_version=instrument_version,
-        )
+        if preselected_feature_columns is not None:
+            # Multi-dataset combined mode — features already aligned by combine_datasets()
+            feature_columns          = [c for c in preselected_feature_columns if c in df.columns]
+            missing_dictionary_columns = []
+            instrument_dictionary    = None
+            if instrument_version:
+                self.instrument_version = str(instrument_version)
+            self.instrument_detection_ = {
+                'version': self.instrument_version or 'combined',
+                'reason':  'preselected_combined',
+                'scores':  {},
+            }
+            detection = self.instrument_detection_
+        else:
+            detection, instrument_dictionary = self._load_instrument_context(
+                df,
+                source_path=source_path,
+                instrument_version=instrument_version,
+            )
+            feature_columns, missing_dictionary_columns = self._get_feature_columns(df, instrument_dictionary)
+            if not feature_columns:
+                raise ValueError("No usable feature columns found for the detected instrument")
 
-        # In training mode, map ICD codes to WHO standardised causes before anything else
+        # In training mode, map ICD codes to WHO standardised causes before anything else.
+        # _apply_who_causelist_mapping is a no-op when pcva_who_cod already exists (combined mode).
         if target_col is not None:
             df = self._apply_who_causelist_mapping(df)
-
-        # Feature selection
-        feature_columns, missing_dictionary_columns = self._get_feature_columns(df, instrument_dictionary)
-        if not feature_columns:
-            raise ValueError("No usable feature columns found for the detected instrument")
 
         dfs = [df[feature_columns]]
 
