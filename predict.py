@@ -26,10 +26,14 @@ def main():
     parser.add_argument("--report", help="Run data quality report (use 'dqr')")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--ood_threshold", type=float, default=None,
-                        help="Override the model's saved OOD probability threshold "
-                             "(0–1). Lower values flag fewer records as out-of-distribution. "
-                             "Use when the combined model is overly conservative for one "
-                             "instrument version (e.g. 0.15 for 2016 data).")
+                        help="Override the model's OOD confidence threshold (0–1). "
+                             "Only applies when the model has no entropy threshold "
+                             "(old models). Lower = fewer OOD flags.")
+    parser.add_argument("--dk-threshold", type=float, default=None,
+                        help="Override the DK-missingness OOD threshold (0–1). "
+                             "Records where more than this fraction of feature columns "
+                             "are 'dk'/missing are flagged OOD. Default: 0.60. "
+                             "Set to 1.0 to disable DK-based OOD entirely.")
 
     args = parser.parse_args()
 
@@ -58,9 +62,18 @@ def main():
         if not (0 < args.ood_threshold < 1):
             print(f"WARNING: --ood_threshold {args.ood_threshold} is outside (0,1); ignoring.")
         else:
-            predictor.ood_threshold = args.ood_threshold
+            predictor.ood_threshold         = args.ood_threshold
+            predictor.ood_entropy_threshold = None   # force confidence-based path
             if args.verbose:
                 print(f"OOD threshold overridden to {args.ood_threshold}")
+
+    if args.dk_threshold is not None:
+        if not (0 < args.dk_threshold <= 1):
+            print(f"WARNING: --dk-threshold {args.dk_threshold} is outside (0,1]; ignoring.")
+        else:
+            predictor.dk_threshold = args.dk_threshold
+            if args.verbose:
+                print(f"DK threshold overridden to {args.dk_threshold:.0%}")
 
     if args.report == "dqr":
         dqr = predictor.generate_data_quality_report(df)

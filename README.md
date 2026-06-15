@@ -23,3 +23,13 @@ Target column should be labelled `pcva_ucod`. The ICD consistency field is `pcva
 ```
 % python3 predict.py --model 'models/ccva_model.pkl' --input va_test.csv --output results.csv --verbose
 ```
+
+Disable DK-based OOD entirely (set to 100% = nothing fails this)
+```
+python3 predict.py --model models/ --input va_test2.csv --dk-threshold 1.0
+```
+
+# Also relax confidence threshold on the old model
+```
+python3 predict.py --model models/ --input va_test2.csv --dk-threshold 1.0 --ood_threshold 0.05
+```

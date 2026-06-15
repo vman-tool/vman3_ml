@@ -21,8 +21,14 @@ class CCVAPredictor:
         self.feature_encoders = artifacts['feature_encoders']
         self.preprocessor = artifacts['preprocessor']
         self.original_classes = set(artifacts['original_classes'])
-        self.ood_threshold = artifacts.get('ood_threshold')
-        self.dk_threshold = artifacts.get('dk_threshold', 0.5)
+        self.ood_threshold         = artifacts.get('ood_threshold')
+        self.ood_entropy_threshold = artifacts.get('ood_entropy_threshold')
+        # DK threshold: enforce a minimum of 0.60.
+        # Old artifacts were calibrated on quality-filtered training data, giving
+        # unrealistically tight thresholds (~0.15) that over-flag prediction data.
+        # 0.60 means ">60 % of feature columns are missing" — genuinely unusable.
+        raw_dk = artifacts.get('dk_threshold', 0.60)
+        self.dk_threshold = max(raw_dk, 0.60)
         self.instrument_version          = artifacts.get('instrument_version')
         self.training_instrument_versions = artifacts.get('training_instrument_versions',
                                                           [self.instrument_version])
@@ -54,12 +60,30 @@ class CCVAPredictor:
         if self.verbose:
             versions_str = ', '.join(str(v) for v in self.training_instrument_versions if v)
             model_name   = artifacts.get('model_name', type(self.model).__name__)
+            ood_str = (
+                f"entropy>{self.ood_entropy_threshold:.3f}"
+                if self.ood_entropy_threshold is not None
+                else f"conf<{self.ood_threshold}"
+            )
             print(f"Model loaded: {model_name} | instrument={versions_str or self.instrument_version}, "
                   f"{len(self.union_feature_columns)} union features, "
                   f"{len(self.original_classes)} classes, "
                   f"narrative_dims={self.narrative_dims}, "
-                  f"OOD threshold={self.ood_threshold}, "
-                  f"DK threshold={self.dk_threshold}")
+                  f"OOD={ood_str}, DK threshold={self.dk_threshold:.0%}")
+
+        # Column order the scaler was fit on — used for reindexing before transform.
+        # New artifacts store this explicitly; old ones require reconstruction.
+        _stored_cols = artifacts.get('scaler_feature_columns')
+        if _stored_cols:
+            self.scaler_feature_columns = list(_stored_cols)
+        else:
+            # Old artifact: _encode_features puts numeric cols first then categorical.
+            # Reconstruct that order: anything NOT in feature_encoders is numeric.
+            _enc_keys = set(self.feature_encoders.keys())
+            _all = list(self.preprocessor.final_training_columns)
+            _numeric = [c for c in _all if c not in _enc_keys]
+            _categ   = [c for c in _all if c in _enc_keys]
+            self.scaler_feature_columns = _numeric + _categ
 
         # Feature-label lookup and SHAP explainer (lazy-init on first predict_detailed call)
         self._feature_labels: dict = {}
@@ -141,7 +165,7 @@ class CCVAPredictor:
         of the total |SHAP| for a record, a narrative note is prepended showing
         the raw narrative text and the narrative's aggregate direction/percentage.
         """
-        feature_names = list(self.scaler.feature_names_in_)
+        feature_names = list(self.scaler_feature_columns)
         is_narrative   = np.array([n.startswith('narr_emb_') for n in feature_names])
 
         if not _HAS_SHAP:
@@ -312,7 +336,7 @@ class CCVAPredictor:
                     X_raw[f'narr_emb_{i}'] = 0.0
 
         encoded = self._apply_encoders(X_raw)
-        encoded = encoded.reindex(columns=self.scaler.feature_names_in_, fill_value=0)
+        encoded = encoded.reindex(columns=self.scaler_feature_columns, fill_value=0)
         scaled  = self.scaler.transform(encoded)
         return scaled, dk_ood_mask
 
@@ -386,16 +410,30 @@ class CCVAPredictor:
                 )
                 lower, upper = self._wilson_ci(confidence, n_arr)
 
-                ood_mask = (
-                    (confidence < self.ood_threshold)
-                    if self.ood_threshold is not None
-                    else np.zeros(len(predictions), dtype=bool)
-                )
+                # Entropy-based OOD (primary signal for new models):
+                # Normalised entropy ∈ [0,1] — 0 = certain, 1 = uniform.
+                # More robust than raw confidence because it measures spread
+                # across ALL classes, not just the top-1 probability.
+                if self.ood_entropy_threshold is not None:
+                    ood_mask = norm_entropy > self.ood_entropy_threshold
+                elif self.ood_threshold is not None:
+                    # Fallback for old models without entropy threshold
+                    ood_mask = confidence < self.ood_threshold
+                else:
+                    ood_mask = np.zeros(len(predictions), dtype=bool)
+
                 if self.verbose:
-                    print(f"Confidence — min={confidence.min():.3f}, "
-                          f"median={np.median(confidence):.3f}, "
-                          f"max={confidence.max():.3f}, "
-                          f"OOD threshold={self.ood_threshold}")
+                    print(
+                        f"Confidence — min={confidence.min():.3f}, "
+                        f"median={np.median(confidence):.3f}, "
+                        f"max={confidence.max():.3f}"
+                    )
+                    if self.ood_entropy_threshold is not None:
+                        print(
+                            f"Entropy   — median={np.median(norm_entropy):.3f}, "
+                            f"OOD threshold={self.ood_entropy_threshold:.3f} "
+                            f"({ood_mask.sum()} conf-OOD)"
+                        )
             else:
                 predictions      = self.model.predict(scaled)
                 nan_col          = np.full(len(predictions), np.nan)

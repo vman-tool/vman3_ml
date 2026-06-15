@@ -10,6 +10,7 @@ os.environ.setdefault('HF_HUB_VERBOSITY', 'error')
 from ccva_ml.processing import DataPreprocessor
 from ccva_ml.training import ModelTrainer
 from ccva_ml.mapcauselist import export_mapping_excel
+from ccva_ml.label_audit import LabelAuditor, build_feature_labels
 import argparse
 import pandas as pd
 import numpy as np
@@ -17,6 +18,7 @@ import sys
 import os
 import json
 from pathlib import Path
+from sklearn.model_selection import train_test_split as _holdout_split
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,6 +59,17 @@ Examples:
     parser.add_argument('--export-mapping', metavar='XLSX',
                         help='Export a WHO cause-mapping audit workbook before training '
                              '(e.g. reports/who_mapping.xlsx)')
+    parser.add_argument('--label-audit', action='store_true',
+                        help='Run cleanlab label quality audit after training and write '
+                             'results to --audit-report directory.')
+    parser.add_argument('--llm-review', action='store_true',
+                        help='Send top-N cleanlab-flagged records to Claude API for a '
+                             'second-opinion review (requires ANTHROPIC_API_KEY env var). '
+                             'Only active when --label-audit is also set.')
+    parser.add_argument('--audit-top-n', type=int, default=50,
+                        help='Number of flagged records to send for LLM review (default 50).')
+    parser.add_argument('--audit-cv-folds', type=int, default=5,
+                        help='Cross-validation folds for cleanlab (default 5).')
 
     args = parser.parse_args()
 
@@ -149,18 +162,81 @@ Examples:
         print(f"Audit report saved to {audit_report_path}")
 
     # ------------------------------------------------------------------ #
-    # Train                                                                #
+    # Holdout split — 20% stratified, never seen during training          #
     # ------------------------------------------------------------------ #
     if isinstance(y, pd.DataFrame):
         y = y.squeeze()
     y = np.array(y).ravel()
 
+    X_train_raw, X_holdout_raw, y_train_raw, y_holdout_raw = _holdout_split(
+        X, y, test_size=0.2, stratify=y, random_state=0,
+    )
+    print(
+        f"Hold-out split: {len(X_train_raw):,} train / "
+        f"{len(X_holdout_raw):,} test ({100 * len(X_holdout_raw) / len(y):.0f}%)",
+        flush=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Train                                                                #
+    # ------------------------------------------------------------------ #
     trainer = ModelTrainer(verbose=args.verbose)
-    trainer.train(X, y)
+    trainer.train(X_train_raw, y_train_raw)
     trainer.save_model(preprocessor=preprocessor, version=preprocessor.instrument_version)
 
-    trainer.evaluate(trainer._X_test, trainer._y_test, save_path='cv_results.json')
+    # Internal val results (used for model selection during training)
+    trainer.evaluate(trainer._X_test, trainer._y_test,
+                     save_path='cv_results.json', label='Val')
+    print()
+
+    # ------------------------------------------------------------------ #
+    # Final hold-out evaluation — 20% never touched during training       #
+    # ------------------------------------------------------------------ #
+    print('═' * 62, flush=True)
+    print('  HOLD-OUT TEST RESULTS  (20% — never seen during training)', flush=True)
+    print('═' * 62, flush=True)
+
+    # Filter out any classes the trainer dropped (tiny classes in training set).
+    # Use list (not set) for np.isin — numpy silently fails when test_elements is a set.
+    known_classes = list(trainer.label_encoder.classes_)
+    ho_mask = np.isin(y_holdout_raw, known_classes)
+    if not ho_mask.all():
+        n_excl = int((~ho_mask).sum())
+        print(f"  Note: {n_excl} holdout record(s) excluded — class not in training set.")
+        X_holdout_raw = X_holdout_raw.iloc[ho_mask] if hasattr(X_holdout_raw, 'iloc') else X_holdout_raw[ho_mask]
+        y_holdout_raw = y_holdout_raw[ho_mask]
+
+    X_holdout_scaled  = trainer.transform_features(X_holdout_raw)
+    y_holdout_encoded = trainer.label_encoder.transform(y_holdout_raw)
+
+    holdout_path = str(audit_report_path.parent / 'holdout_test_results.json')
+    trainer.evaluate(X_holdout_scaled, y_holdout_encoded,
+                     save_path=holdout_path, label='Hold-out')
+
     print('Training completed.')
+
+    # ------------------------------------------------------------------ #
+    # Label quality audit                                                  #
+    # ------------------------------------------------------------------ #
+    if args.label_audit:
+        feature_labels = build_feature_labels(preprocessor)
+        auditor = LabelAuditor(
+            cv_folds  = args.audit_cv_folds,
+            top_n_llm = args.audit_top_n,
+            verbose   = args.verbose,
+        )
+        auditor.run(
+            X_scaled           = trainer._X_all_scaled,
+            y_encoded          = trainer._y_all,
+            model              = trainer.best_model,
+            label_encoder      = trainer.label_encoder,
+            source_df          = _source_df,
+            audit_source_index = trainer._audit_source_index,
+            feature_labels     = feature_labels,
+            output_dir         = str(audit_report_path.parent),
+            run_llm            = args.llm_review,
+            top_n_llm          = args.audit_top_n,
+        )
 
 
 if __name__ == '__main__':
