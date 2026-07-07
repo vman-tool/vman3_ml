@@ -1,7 +1,7 @@
 # vman3_ml/vman3_ml/processing.py
 import pandas as pd
 import numpy as np
-from vman3_dq import change_null_toskipped
+from vman_dq import change_null_toskipped
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import chardet
 import re
@@ -52,16 +52,16 @@ class DataPreprocessor:
         #return self._preprocess_data(df)
         return df
     
-    def _preprocess_data(self, df):
+    def _preprocess_data(self, df, progress_callback=None):
         """Internal preprocessing steps"""
         if self.verbose:
             print("Starting data preprocessing")
-        
+
         # Drop unnecessary columns
         df = df.drop(columns=[col for col in df.columns if "_check" in col])
 
-        # Clean data using vman3_dq
-        df = change_null_toskipped(df, verbose=self.verbose)
+        # Clean data using vman_dq
+        df = change_null_toskipped(df, verbose=self.verbose, progress_callback=progress_callback)
 
         # Standardize column names
         df.columns = (
