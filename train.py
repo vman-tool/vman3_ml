@@ -7,10 +7,10 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('HF_HUB_VERBOSITY', 'error')
 
-from ccva_ml.processing import DataPreprocessor
-from ccva_ml.training import ModelTrainer
-from ccva_ml.mapcauselist import export_mapping_excel
-from ccva_ml.label_audit import LabelAuditor, build_feature_labels
+from vman_ml.processing import DataPreprocessor
+from vman_ml.training import ModelTrainer
+from vman_ml.mapcauselist import export_mapping_excel
+from vman_ml.label_audit import LabelAuditor, build_feature_labels
 import argparse
 import pandas as pd
 import numpy as np

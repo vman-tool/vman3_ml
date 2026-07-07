@@ -4,9 +4,9 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('HF_HUB_VERBOSITY', 'error')
 
-from ccva_ml.processing import DataPreprocessor
-from ccva_ml.prediction import CCVAPredictor
-from ccva_ml.instrument_dictionary import detect_instrument_version
+from vman_ml.processing import DataPreprocessor
+from vman_ml.prediction import CCVAPredictor
+from vman_ml.instrument_dictionary import detect_instrument_version
 import pandas as pd
 import numpy as np
 import sys

@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="ccva_ml",
+    name="vman_ml",
     version="0.1.0",
     author="Isaac Lyatuu",
     author_email="ilyatuu@gmail.com",
@@ -27,6 +27,6 @@ setup(
     python_requires='>=3.7',
     include_package_data=True,
     package_data={
-        'ccva_ml': ['data/*.csv'],
+        'vman_ml': ['data/*.csv'],
     },
 )

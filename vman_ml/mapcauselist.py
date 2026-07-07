@@ -4,7 +4,7 @@ PCVA to WHO VA Cause-List Mapping
 Primary API  : map_causelist(df, ...)         — ICD-code-based mapping (TZ, NG).
                map_ucod_text_to_who(df, ...)  — text-label-based mapping (ES).
 Audit API    : export_mapping_excel(df, ...) — two-sheet audit workbook.
-CLI          : python -m ccva_ml.mapcauselist --who <path> --input <csv> [--output <xlsx>]
+CLI          : python -m vman_ml.mapcauselist --who <path> --input <csv> [--output <xlsx>]
 
 WHO columns added by both mapping functions:
   pcva_who_cod    – WHO target cause label  (e.g. "Malaria")
