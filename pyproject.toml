@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vman_ml"
+version = "1.0.2"
+authors = [
+    {name = "Isaac Lyatuu", email = "ilyatuu@gmail.com"},
+]
+description = "Computer Coded Verbal Autopsy (CCVA) Machine Learning Module"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.6.0,<2.0.0",
+    "joblib>=1.3.0",
+    "xgboost>=2.0.0",
+    "sentence-transformers>=3.0.0",
+    "shap>=0.45.0",
+    "imbalanced-learn>=0.12.0",
+    "openpyxl>=3.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/vman-tool/vman3_ml"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+vman_ml = [
+    "data/*.csv",
+    "data/*.xlsx",
+    "data/*.json",
+    "data/dictionaries/*",
+    "resources/*.xlsx",
+    "resources/*.csv",
+    "resources/dictionaries/*.json",
+]
