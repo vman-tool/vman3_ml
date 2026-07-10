@@ -51,6 +51,10 @@ Examples:
                         help='Path to an explicit cause taxonomy JSON file')
     parser.add_argument('--audit_report', default='reports/training_audit_report.json',
                         help='Path to save the pre-training audit report')
+    parser.add_argument('--report-version',
+                        help='Version tag for this run, e.g. v1.1.0. '
+                             'Saves all report outputs to reports/{version}/. '
+                             'Overrides the --audit_report default when not set explicitly.')
     parser.add_argument('--version', choices=['2016', '2022'],
                         help='Override instrument version (only used for single-input training)')
     parser.add_argument('--target', default='pcva_who_cod',
@@ -72,6 +76,9 @@ Examples:
                         help='Cross-validation folds for cleanlab (default 5).')
 
     args = parser.parse_args()
+
+    if args.report_version and args.audit_report == 'reports/training_audit_report.json':
+        args.audit_report = f'reports/{args.report_version}/training_audit_report.json'
 
     preprocessor = DataPreprocessor(
         verbose=args.verbose,
@@ -186,7 +193,7 @@ Examples:
 
     # Internal val results (used for model selection during training)
     trainer.evaluate(trainer._X_test, trainer._y_test,
-                     save_path='cv_results.json', label='Val')
+                     save_path=str(audit_report_path.parent / 'cv_results.json'), label='Val')
     print()
 
     # ------------------------------------------------------------------ #
