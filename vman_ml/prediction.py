@@ -1,6 +1,11 @@
 import joblib
+import os
+import threading
+import time
 import pandas as pd
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable, Optional
 from .instrument_dictionary import detect_instrument_version
 from .narrative import NarrativeEmbedder, NARRATIVE_COLS
 
@@ -9,6 +14,27 @@ try:
     _HAS_SHAP = True
 except ImportError:
     _HAS_SHAP = False
+
+
+def _set_model_threads(model, n: int) -> dict:
+    """Set internal thread-count on XGBoost / sklearn models. Returns original values."""
+    saved = {}
+    for attr in ('nthread', 'n_jobs', 'num_threads'):
+        if hasattr(model, attr):
+            try:
+                saved[attr] = getattr(model, attr)
+                setattr(model, attr, n)
+            except Exception:
+                pass
+    return saved
+
+
+def _restore_model_threads(model, saved: dict) -> None:
+    for attr, val in saved.items():
+        try:
+            setattr(model, attr, val)
+        except Exception:
+            pass
 
 
 class CCVAPredictor:
@@ -357,7 +383,9 @@ class CCVAPredictor:
         """Return a 1-D array of predicted cause-of-death labels (or 'out_of_distribution')."""
         return self.predict_detailed(cleaned_df)['prediction'].values
 
-    def predict_detailed(self, cleaned_df):
+    def predict_detailed(self, cleaned_df,
+                         progress_callback: Optional[Callable[[int, str], None]] = None,
+                         n_parallel_workers: int = 0):
         """Predict cause of death and return a DataFrame with confidence statistics.
 
         Columns returned
@@ -373,12 +401,82 @@ class CCVAPredictor:
 
         The Wilson CI uses per-class training counts as the effective sample size,
         so rarer classes produce wider intervals even at the same raw probability.
+
+        Parameters
+        ----------
+        progress_callback : callable(pct: int, msg: str) → None, optional
+            Called at key milestones with an integer 0-100 and a status message.
+            Milestones: 5 (starting), 20 (features prepared), 20-90 (during
+            predict_proba chunks), 95 (post-processing), 100 (done).
+        n_parallel_workers : int
+            Number of parallel threads for the predict_proba step.
+            0 (default) = auto-detect from os.cpu_count().
+            1 = sequential (original behaviour).
         """
+        def _cb(pct: int, msg: str = "") -> None:
+            if progress_callback:
+                try:
+                    progress_callback(pct, msg)
+                except Exception:
+                    pass
+
         try:
+            _cb(5, "Preparing features...")
+            t0 = time.perf_counter()
             scaled, dk_ood_mask = self._prepare_features(cleaned_df)
+            t_prep = time.perf_counter() - t0
+            _cb(20, f"Features prepared in {t_prep:.1f}s — starting predictions...")
 
             if hasattr(self.model, 'predict_proba'):
-                probs       = self.model.predict_proba(scaled)          # (N, C)
+                # ── Parallel chunked predict_proba ────────────────────────────
+                # _prepare_features is sequential (preprocessor has mutable state).
+                # predict_proba on a numpy array is read-only on model params →
+                # safe to run in parallel threads.
+                n_cpus = os.cpu_count() or 4
+                n_workers = n_parallel_workers if n_parallel_workers > 0 else max(1, min(4, n_cpus // 2))
+
+                # Each worker gets a proportionate share of the model's internal threads
+                # to avoid CPU over-subscription across the parallel pool.
+                threads_per_worker = max(1, n_cpus // n_workers)
+                saved_threads = _set_model_threads(self.model, threads_per_worker)
+
+                # Split the scaled array into one chunk per worker (or fewer if dataset is small)
+                n_chunks = max(1, min(n_workers * 5, len(scaled) // 50))
+                chunk_size = max(1, len(scaled) // n_chunks)
+                chunks = [(i, scaled[i:i + chunk_size]) for i in range(0, len(scaled), chunk_size)]
+                n_chunks = len(chunks)
+
+                probs_ordered: list = [None] * n_chunks
+                completed = 0
+                t_predict_start = time.perf_counter()
+
+                try:
+                    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                        future_to_idx = {
+                            pool.submit(self.model.predict_proba, chunk): idx
+                            for idx, chunk in chunks
+                        }
+                        for future in as_completed(future_to_idx):
+                            chunk_idx = future_to_idx[future]
+                            probs_ordered[chunk_idx // chunk_size] = future.result()
+                            completed += 1
+                            elapsed_predict = time.perf_counter() - t_predict_start
+                            pct_done = completed / n_chunks
+                            eta = (elapsed_predict / pct_done * (1 - pct_done)) if pct_done > 0 else 0
+                            # Map 20→90% range for prediction step
+                            ui_pct = 20 + int(pct_done * 70)
+                            _cb(ui_pct,
+                                f"Predicting chunk {completed}/{n_chunks} "
+                                f"({pct_done:.0%} done, ETA ~{eta:.0f}s)")
+                finally:
+                    _restore_model_threads(self.model, saved_threads)
+
+                probs = np.concatenate([p for p in probs_ordered if p is not None], axis=0)
+                t_predict_total = time.perf_counter() - t_predict_start
+                throughput = len(scaled) / t_predict_total if t_predict_total > 0 else 0
+                _cb(90, f"Predictions done in {t_predict_total:.1f}s "
+                        f"({throughput:.0f} records/s, {n_workers} workers)")
+
                 pred_idx    = np.argmax(probs, axis=1)                  # integer indices
                 predictions = self.model.classes_[pred_idx]
 
@@ -435,6 +533,7 @@ class CCVAPredictor:
                             f"({ood_mask.sum()} conf-OOD)"
                         )
             else:
+                _cb(90, "Running predictions (no probability model)...")
                 predictions      = self.model.predict(scaled)
                 nan_col          = np.full(len(predictions), np.nan)
                 confidence       = nan_col.copy()
@@ -445,6 +544,7 @@ class CCVAPredictor:
                 second_prediction = np.full(len(predictions), '', dtype=object)
                 ood_mask         = np.zeros(len(predictions), dtype=bool)
 
+            _cb(95, "Decoding predictions and computing OOD flags...")
             final_ood_mask = ood_mask | dk_ood_mask.values
             decoded = self.label_encoder.inverse_transform(predictions)
             decoded[final_ood_mask] = 'out_of_distribution'
@@ -456,6 +556,7 @@ class CCVAPredictor:
                 print(f"Predictions: {len(decoded) - n_ood} classified, {n_ood} OOD")
 
             notes = self._generate_notes(scaled, predictions, cleaned_df)
+            _cb(100, "Predictions complete.")
 
             return pd.DataFrame({
                 'prediction':            decoded,
