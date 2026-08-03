@@ -440,7 +440,13 @@ class DataPreprocessor:
             'details': {},
         }
 
-        label_series = working[target_col].astype(str).str.strip()
+        # Persist the stripped label back onto the working column (not just
+        # this local copy) - otherwise "pneumonia" and "pneumonia " (trailing
+        # whitespace) survive as two distinct labels through value_counts()
+        # and rare-cause clustering downstream, silently fragmenting one
+        # cause into two different training targets.
+        working[target_col] = working[target_col].astype(str).str.strip()
+        label_series = working[target_col]
         unknown_patterns = self.taxonomy.get('unknown_patterns', [])
         invalid_mask = (
             label_series.eq('') |

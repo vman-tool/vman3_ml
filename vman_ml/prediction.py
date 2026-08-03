@@ -155,6 +155,16 @@ class CCVAPredictor:
     # Feature columns that are administrative/metadata, not clinical signals.
     _SUPPRESSED_FEATURES = frozenset({'id10010c', 'id10010b', 'id10010a', 'id10010'})
 
+    # Cause-of-death classes that require the decedent to be an adult female
+    # who could plausibly be pregnant or post-partum. Never valid for a male
+    # decedent, or for a child/neonate decedent. Mirrors vman_dq's ICI C1/C7/C8
+    # biological-plausibility rules (pregnancy/maternal responses for a male
+    # decedent), applied here to the model's output rather than input data.
+    _MATERNAL_ONLY_CLASSES = frozenset({
+        'Pregnancy-related sepsis',
+        'cluster_pregnancy_childbirth_and_puerperium_related_disorders',
+    })
+
     @classmethod
     def _is_informative(cls, val) -> bool:
         """True when val adds something a human reader can act on."""
@@ -300,11 +310,25 @@ class CCVAPredictor:
             if isinstance(encoder, dict):
                 X[col] = col_data.map(encoder).fillna(-1).astype(float)
             else:
-                known    = set(encoder.classes_)
-                fallback = 'dk' if 'dk' in known else encoder.classes_[0]
-                X[col]   = encoder.transform(
-                    col_data.apply(lambda v: v if v in known else fallback)
-                )
+                known = set(encoder.classes_)
+                unseen_mask = ~col_data.isin(known)
+                if unseen_mask.any():
+                    # Prefer an explicit unknown/missing bucket over an arbitrary
+                    # real category. Silently mapping e.g. an unrecognised sex
+                    # value to encoder.classes_[0] ('female', alphabetically
+                    # first) would misrepresent the record's actual demographics
+                    # rather than just losing one feature's signal.
+                    fallback = next(
+                        (c for c in ('dk', 'unknown', 'other') if c in known),
+                        encoder.classes_[0],
+                    )
+                    n = int(unseen_mask.sum())
+                    examples = col_data[unseen_mask].unique()[:5].tolist()
+                    print(f"WARNING: {n} unseen value(s) in '{col}' "
+                          f"(e.g. {examples}) mapped to fallback '{fallback}' — "
+                          f"check for a train/predict value-format mismatch.")
+                    col_data = col_data.where(~unseen_mask, fallback)
+                X[col] = encoder.transform(col_data)
         for col in X.select_dtypes(include=['object']).columns:
             X[col] = pd.factorize(X[col])[0]
         return X
@@ -365,6 +389,82 @@ class CCVAPredictor:
         encoded = encoded.reindex(columns=self.scaler_feature_columns, fill_value=0)
         scaled  = self.scaler.transform(encoded)
         return scaled, dk_ood_mask
+
+    def _maternal_class_columns(self) -> np.ndarray:
+        """Column indices into predict_proba's output for maternal/pregnancy-only
+        classes (see _MATERNAL_ONLY_CLASSES), resolved through the label encoder.
+        Returns an empty array if none of those classes exist in this model.
+        """
+        known = set(self.label_encoder.classes_)
+        present = [c for c in self._MATERNAL_ONLY_CLASSES if c in known]
+        if not present:
+            return np.array([], dtype=int)
+        encoded = set(self.label_encoder.transform(present))
+        class_list = list(self.model.classes_)
+        return np.array(
+            [i for i, c in enumerate(class_list) if c in encoded],
+            dtype=int,
+        )
+
+    @staticmethod
+    def _col(df, name: str):
+        """Case-insensitive column lookup. Returns the Series, or None."""
+        for c in df.columns:
+            if c.lower() == name:
+                return df[c]
+        return None
+
+    def _apply_plausibility_constraints(self, probs: np.ndarray, cleaned_df) -> np.ndarray:
+        """Zero out probability mass for biologically implausible (record, class)
+        combinations, then renormalise so each row still sums to 1.
+
+        Currently enforces one rule: maternal/pregnancy-related causes
+        (_MATERNAL_ONLY_CLASSES) cannot be the cause of death for a male
+        decedent or for a child/neonate decedent. This mirrors vman_dq's ICI
+        rules (pregnancy/maternal responses flagged for a male decedent) -
+        the same biological-plausibility check, applied to the model's
+        output instead of to input data quality.
+
+        Silently returns probs unchanged if the expected demographic columns
+        (id10019, ischild, isneonatal) aren't present in cleaned_df, or if
+        none of the maternal-only classes exist in this model.
+        """
+        maternal_cols = self._maternal_class_columns()
+        if maternal_cols.size == 0:
+            return probs
+
+        sex = self._col(cleaned_df, 'id10019')
+        is_male = (
+            sex.astype(str).str.strip().str.lower().eq('male').to_numpy()
+            if sex is not None else np.zeros(len(cleaned_df), dtype=bool)
+        )
+
+        def _flag(name):
+            s = self._col(cleaned_df, name)
+            if s is None:
+                return np.zeros(len(cleaned_df), dtype=bool)
+            return s.astype(str).str.strip().str.lower().isin(['1', 'yes', 'true']).to_numpy()
+
+        is_child_or_neonate = _flag('ischild') | _flag('isneonatal')
+        disallow = is_male | is_child_or_neonate
+        if not disallow.any():
+            return probs
+
+        adjusted = probs.copy()
+        adjusted[np.ix_(disallow, maternal_cols)] = 0.0
+        row_sums = adjusted.sum(axis=1)
+        safe = row_sums > 0
+        renormalise = disallow & safe
+        if renormalise.any():
+            adjusted[renormalise] = adjusted[renormalise] / row_sums[renormalise, None]
+        # A row where every last bit of probability mass happened to sit on
+        # maternal-only classes (safe==False) falls back to the original
+        # distribution rather than dividing by zero - this should be rare
+        # enough in practice to just fall through to normal OOD handling.
+        never_safe = disallow & ~safe
+        if never_safe.any():
+            adjusted[never_safe] = probs[never_safe]
+        return adjusted
 
     @staticmethod
     def _wilson_ci(p, n, z=1.96):
@@ -472,6 +572,7 @@ class CCVAPredictor:
                     _restore_model_threads(self.model, saved_threads)
 
                 probs = np.concatenate([p for p in probs_ordered if p is not None], axis=0)
+                probs = self._apply_plausibility_constraints(probs, cleaned_df)
                 t_predict_total = time.perf_counter() - t_predict_start
                 throughput = len(scaled) / t_predict_total if t_predict_total > 0 else 0
                 _cb(90, f"Predictions done in {t_predict_total:.1f}s "
