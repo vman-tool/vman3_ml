@@ -132,16 +132,27 @@ def _detect_icd_standard(icd_series: pd.Series) -> int:
 
 
 def _load_who_causelist(who_path=None) -> pd.DataFrame:
-    """Load and normalise the WHO target cause-list CSV."""
-    path = who_path or WHO_CAUSELIST_PATH
-    df = pd.read_csv(path)
-    df.columns = [c.strip() for c in df.columns]
-    df = df.rename(columns={
-        'vas-id':       'vas_id',
-        'title  codes': 'who_title',
-        'ICD-10 codes': 'icd10_who',
-        'ICD-11 codes': 'icd11_who',
-    })
+    """Load and normalise the WHO target cause-list.
+
+    Defaults to the bundled WHO_TARGET_LIST Python module (transcribed from
+    Annex 1, Table A1 of the WHO PCVA Manual for Physician Reviewers) so this
+    reference data ships with package source and can't be lost the way a
+    gitignored CSV/JSON resource file was previously. Pass who_path to load
+    from a custom CSV instead (same column names expected either way:
+    vas_id, who_title, icd10_who, icd11_who, "WHO Major Cause", "Broad Group").
+    """
+    if who_path is not None:
+        df = pd.read_csv(who_path)
+        df.columns = [c.strip() for c in df.columns]
+        df = df.rename(columns={
+            'vas-id':       'vas_id',
+            'title  codes': 'who_title',
+            'ICD-10 codes': 'icd10_who',
+            'ICD-11 codes': 'icd11_who',
+        })
+    else:
+        from .resources.who_target_list import WHO_TARGET_LIST
+        df = pd.DataFrame(WHO_TARGET_LIST)
     df['who_title'] = df['who_title'].astype(str).str.strip()
     return df
 
@@ -221,7 +232,15 @@ def _match_code(
     Handles compound codes (joined by '/' or '&') by trying each part.
     Returns (who_vas_id, who_title, match_method).
     """
-    if not icd_code or icd_code in ('nan', ''):
+    # pandas' newer nullable string dtype can leave a missing cell as an
+    # actual float('nan') even after the caller's .astype(str) - the classic
+    # object-dtype behaviour of coercing NaN to the literal string "nan"
+    # isn't guaranteed anymore. Normalise defensively here rather than
+    # trusting the caller has already fully stringified everything.
+    if pd.isna(icd_code):
+        return None, None, 'No code'
+    icd_code = str(icd_code).strip()
+    if not icd_code or icd_code.lower() == 'nan':
         return None, None, 'No code'
 
     parts = re.split(r'[/&]', icd_code)
@@ -246,17 +265,50 @@ def _match_code(
 # Text-label matching (for datasets without ICD codes, e.g. Eswatini)
 # ---------------------------------------------------------------------------
 
-# Hard overrides for ES labels that can't be matched by prefix rules alone.
+# Hard overrides for source labels that can't be matched by prefix rules alone.
 # Key: normalised source label.  Value: (WHO VAS ID, WHO target cause title).
 _TEXT_UCOD_OVERRIDES: dict[str, tuple[str, str]] = {
     'covid-19':                   ('VAs-01.13', 'Coronavirus disease (COVID19)'),
     'chronic obstructive (copd)': ('VAs-05.01', 'Chronic obstructive pulmonary disease (COPD)'),
+    # Eswatini drops the trailing "disease" from this WHO title - the WHO-title-
+    # starts-with-label rule declines to match it (9 extra chars exceeds the
+    # 5-char footnote-suffix tolerance), so it needs an explicit override.
+    'unspecified infectious':     ('VAs-01.99', 'Unspecified infectious disease'),
+    # Nigeria (ng-2) uses a heavily abbreviated house style for several
+    # causes, and British "diarrhoeal" for the WHO title's American
+    # "diarrheal" - none of these are prefix/suffix truncations the fuzzy
+    # rules can catch, so each needs its own override.
+    'other and unspecified infect dis':   ('VAs-01.99', 'Unspecified infectious disease'),
+    'acute resp infect incl pneumonia':   ('VAs-01.02', 'Acute respiratory infection, including pneumonia'),
+    'diarrhoeal diseases':                ('VAs-01.04', 'Diarrheal diseases'),
+    'other and unspecified maternal cod': ('VAs-09.99', 'Other and unspecified maternal cause'),
+    'other and unspecified external cod': ('VAs-12.99', 'Other and unspecified external cause of death'),
+    'other and unspecified ncd':          ('VAs-98',    'Other and unspecified non-communicable disease'),
+    'accid fall':                         ('VAs-12.03', 'Accidental fall'),
+    'accid drowning and submersion':      ('VAs-12.04', 'Accidental drowning and submersion'),
+    'accid expos to smoke fire & flame':  ('VAs-12.05', 'Accidental exposure to smoke, fire and flames'),
+    'contact with venomous plant or animal': ('VAs-12.06', 'Contact with venomous animals and plants'),
+    'chronic obstructive pulmonary dis':  ('VAs-05.01', 'Chronic obstructive pulmonary disease (COPD)'),
+}
+
+# Known misspellings/typos seen in real source exports, corrected before any
+# other matching runs. Add here rather than as a one-off fix to a single CSV -
+# these patterns can recur in future exports from the same or other sources.
+_KNOWN_TYPO_FIXES = {
+    r'\bneoplams\b': 'neoplasms',  # e.g. Tanzania 2016 export: "neoplams" for "neoplasms"
 }
 
 
 def _normalize_cause_label(text: str) -> str:
-    """Lowercase, strip, collapse whitespace."""
-    return re.sub(r'\s+', ' ', str(text).strip()).lower()
+    """Lowercase, strip, collapse whitespace, fix known typos, and tidy
+    whitespace immediately around hyphens (e.g. "non- communicable" vs
+    "non-communicable" - a formatting difference, not a different cause).
+    """
+    norm = re.sub(r'\s+', ' ', str(text).strip()).lower()
+    norm = re.sub(r'\s*-\s*', '-', norm)
+    for pattern, replacement in _KNOWN_TYPO_FIXES.items():
+        norm = re.sub(pattern, replacement, norm)
+    return norm
 
 
 def map_ucod_text_to_who(

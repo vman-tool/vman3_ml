@@ -350,6 +350,19 @@ class DataPreprocessor:
 
             clean_df, rare_mapping, cluster_report = self._cluster_rare_causes(clean_df, target_col=target_col)
             self.rare_label_mapping_ = rare_mapping
+
+            # _dropcols_by_threshold groups rows by target_col value and drops
+            # NaN-target rows entirely (df[target_col].dropna().unique() skips
+            # them) - i.e. records whose cause never mapped to a WHO
+            # standardised label via _apply_who_causelist_mapping. This is a
+            # real, often large, additional drop that happened silently
+            # (final_rows used to be measured BEFORE this call, so the audit
+            # report understated attrition - e.g. 11,754 reported vs 6,851
+            # actually used on the 2026 combined TZ/ES/NG training set).
+            unmapped_who_cause_rows = int(clean_df[target_col].isna().sum())
+            clean_df = self._dropcols_by_threshold(clean_df, self.na_threshold, target_col=target_col)
+
+            quality_report['dropped_unmapped_who_cause'] = unmapped_who_cause_rows
             self.training_audit_report_ = self._build_training_audit_report(
                 initial_rows=len(full_df),
                 quality_report=quality_report,
@@ -367,8 +380,6 @@ class DataPreprocessor:
                 },
             )
 
-            clean_df = self._dropcols_by_threshold(clean_df, self.na_threshold, target_col=target_col)
-            
             if self.verbose:
                 print(f"Before dropping NA\n{clean_df[target_col].value_counts()}") 
         else:
@@ -413,7 +424,7 @@ class DataPreprocessor:
         """Load the explicit cause-family taxonomy from disk."""
         default_taxonomy = {
             'default_cluster': 'cluster_other',
-            'unknown_patterns': ['unknown', 'unspecified', 'ill-defined', 'ill defined', 'symptom', 'signs and symptoms', 'cause of death unknown', 'not stated'],
+            'unknown_patterns': ['unknown', 'unspecified', 'indeterminate', 'ill-defined', 'ill defined', 'symptom', 'signs and symptoms', 'cause of death unknown', 'not stated'],
             'families': []
         }
 
@@ -427,11 +438,24 @@ class DataPreprocessor:
 
         return default_taxonomy
 
+    @staticmethod
+    def _col(df, name: str):
+        """Case-insensitive column lookup. Returns the actual column name, or None."""
+        name_l = name.lower()
+        for c in df.columns:
+            if c.lower() == name_l:
+                return c
+        return None
+
     def _apply_training_quality_filter(self, df, target_col='pcva_ucod', quality_col=None):
         """Filter obvious low-quality labels and flag inconsistencies against ICD chapter knowledge."""
         working = df.copy()
         report = {
             'dropped_missing_or_unknown': 0,
+            'dropped_implausible_demographics': 0,
+            'dropped_vman_dq_pregnancy_male_contradiction': 0,
+            'dropped_vman_dq_low_ici': 0,
+            'vman_dq_ici_summary': {},
             'qc_comparable_rows': 0,
             'qc_agree_rows': 0,
             'qc_mismatch_rows': 0,
@@ -448,11 +472,31 @@ class DataPreprocessor:
         working[target_col] = working[target_col].astype(str).str.strip()
         label_series = working[target_col]
         unknown_patterns = self.taxonomy.get('unknown_patterns', [])
+
+        # 'unknown' / 'unspecified' / 'not stated' genuinely mean "no
+        # information" only when they make up the ENTIRE label. Embedded in a
+        # longer label - e.g. "Other and unspecified cardiac disease" - they
+        # name a real WHO broad-category cause (disease system known, subtype
+        # unspecified), not a missing cause. Substring-matching these words
+        # against the whole taxonomy was dropping ~28% of one training set
+        # (mostly "Other and unspecified <system> disease" rows) as if they
+        # were undetermined causes. Only more specific multi-word phrases
+        # ("cause of death unknown", "ill-defined", etc.) are safe to match
+        # as a substring anywhere in the label.
+        _WHOLE_VALUE_ONLY = {'unknown', 'unspecified', 'not stated', 'indeterminate'}
+        whole_value_patterns = [p for p in unknown_patterns if p in _WHOLE_VALUE_ONLY]
+        substring_patterns   = [p for p in unknown_patterns if p not in _WHOLE_VALUE_ONLY]
+
+        norm_lower = label_series.str.lower()
         invalid_mask = (
             label_series.eq('') |
-            label_series.str.lower().isin({'nan', 'none'}) |
-            label_series.str.contains('|'.join(re.escape(pattern) for pattern in unknown_patterns), case=False, na=False)
+            norm_lower.isin({'nan', 'none'}) |
+            norm_lower.isin(whole_value_patterns)
         )
+        if substring_patterns:
+            invalid_mask = invalid_mask | norm_lower.str.contains(
+                '|'.join(re.escape(pattern) for pattern in substring_patterns), na=False
+            )
         report['dropped_missing_or_unknown'] = int(invalid_mask.sum())
         if invalid_mask.any():
             report['details']['filtered_missing_or_unknown'] = (
@@ -463,6 +507,11 @@ class DataPreprocessor:
                 .to_dict('records')
             )
         working = working.loc[~invalid_mask].copy()
+
+        working, report = self._flag_implausible_cause_demographics(
+            working, target_col=target_col, report=report,
+        )
+        working, report = self._apply_vman_dq_quality_filter(working, report=report)
 
         if quality_col and quality_col in working.columns:
             icd_version = self._detect_icd_version(working[quality_col])
@@ -510,6 +559,126 @@ class DataPreprocessor:
 
         return working, report
 
+    # Cause titles that are anatomically restricted to one sex. Checked
+    # against the physician-assigned target label itself, independent of
+    # pcva_who_major, since not every sex-restricted cause falls under the
+    # maternal major group (e.g. male reproductive neoplasms).
+    _FEMALE_ONLY_CAUSE_TITLES = frozenset({
+        'female breast neoplasms',
+        'ruptured uterus',
+    })
+    _MALE_ONLY_CAUSE_TITLES = frozenset({
+        'male reproductive neoplasms',
+    })
+
+    def _flag_implausible_cause_demographics(self, df, target_col, report):
+        """Drop training rows where the physician-assigned cause of death is
+        biologically implausible for the decedent's recorded sex - e.g. a
+        pregnancy/childbirth-related cause assigned to a male decedent, or a
+        male-only cause (male reproductive neoplasms) assigned to a female
+        decedent. Since cause assignment here is done by physicians, human
+        entry/transcription error is possible ("maternal on man") and should
+        not be allowed to teach the model an anatomically impossible
+        association.
+        """
+        sex_col = self._col(df, 'id10019')
+        major_col = self._col(df, 'pcva_who_major')
+        if sex_col is None or target_col not in df.columns:
+            return df, report
+
+        sex = df[sex_col].astype(str).str.strip().str.lower()
+        label_lower = df[target_col].astype(str).str.strip().str.lower()
+        major = df[major_col].astype(str).str.strip().str.lower() if major_col else pd.Series('', index=df.index)
+
+        maternal_on_male = (sex == 'male') & (
+            major.str.startswith('pregnancy') | label_lower.isin(self._FEMALE_ONLY_CAUSE_TITLES)
+        )
+        male_only_on_female = (sex == 'female') & label_lower.isin(self._MALE_ONLY_CAUSE_TITLES)
+        implausible = maternal_on_male | male_only_on_female
+
+        n = int(implausible.sum())
+        report['dropped_implausible_demographics'] = n
+        if n:
+            report['details']['implausible_demographics'] = (
+                df.loc[implausible, [sex_col, target_col]]
+                .value_counts()
+                .rename_axis(['sex', 'cause'])
+                .reset_index(name='count')
+                .to_dict('records')
+            )
+            if self.verbose:
+                print(f"Demographic plausibility filter: dropping {n} record(s) with a "
+                      f"sex-implausible cause of death (e.g. maternal cause on a male decedent).")
+
+        return df.loc[~implausible].copy(), report
+
+    def _apply_vman_dq_quality_filter(self, df, report, min_ici: float = 70.0):
+        """Drop training rows using vman_dq's Internal Consistency Index (ICI):
+
+        1. Any row where vman_dq's own C1/C8 rules find the RAW symptom data
+           itself contradictory on a pregnancy/maternal-vs-sex question
+           (pregnancy, or maternal-death review questions answered for a
+           male decedent) is dropped outright, regardless of overall ICI
+           score - this is the same class of "maternal on man"
+           physician/data-entry error targeted above, but caught from the
+           underlying interview data rather than the label.
+
+           C7 (id10109/id10110 answered for a male) is deliberately NOT
+           included here: those two fields ask whether a delivered baby
+           moved / breathed after birth (stillbirth-vs-live-birth
+           questions), not a pregnancy symptom - they are legitimately
+           answered "yes" for a male neonatal decedent. Empirically, ~400 of
+           ~12k combined training rows hit this "C7 violation" across TZ/
+           ES/NG-1/NG-2, and every sampled case was a genuine male neonatal
+           death, not a data error. Using it as an exclusion here would
+           systematically strip real male neonatal deaths from training.
+           This looks like a mislabeled rule in vman_dq's C7 itself
+           (see vman_dq/dqa.py ICI_RULE_DESCRIPTIONS) and is worth fixing
+           upstream, but until then this filter must not rely on it.
+        2. Any row whose overall ICI falls in vman_dq's published "Critical"
+           tier (< 70%, per the manuscript's own tier boundaries) is dropped
+           as having too many internal contradictions elsewhere to trust as
+           a clean training example.
+
+        Uses vman_dq's compute_ici() directly rather than reimplementing
+        similar checks, so this stays in lockstep with the indicator package.
+        """
+        try:
+            from vman_dq import compute_ici
+        except ImportError:
+            if self.verbose:
+                print("WARNING: vman_dq.compute_ici unavailable - skipping "
+                      "vman_dq-based training quality filter.")
+            return df, report
+
+        ici, flags, _ = compute_ici(df)
+
+        pregnancy_rules = [r for r in ('C1', 'C8') if r in flags.columns]
+        pregnancy_violation = (
+            flags[pregnancy_rules].any(axis=1) if pregnancy_rules
+            else pd.Series(False, index=df.index)
+        )
+
+        valid_ici = ici.dropna()
+        report['vman_dq_ici_summary'] = {
+            'n_scored': int(valid_ici.shape[0]),
+            'mean_ici': float(valid_ici.mean()) if not valid_ici.empty else None,
+            'rules_applied': list(flags.columns),
+        }
+
+        low_ici = ici.notna() & (ici < min_ici) & ~pregnancy_violation
+        drop_mask = pregnancy_violation | low_ici
+
+        report['dropped_vman_dq_pregnancy_male_contradiction'] = int(pregnancy_violation.sum())
+        report['dropped_vman_dq_low_ici'] = int(low_ici.sum())
+
+        if self.verbose and drop_mask.any():
+            print(f"vman_dq quality filter: dropping {int(pregnancy_violation.sum())} record(s) with "
+                  f"pregnancy/maternal-vs-sex contradictions in the raw interview data (C1/C7/C8), "
+                  f"and {int(low_ici.sum())} further record(s) in the ICI Critical tier (<{min_ici}%).")
+
+        return df.loc[~drop_mask].copy(), report
+
     def _build_training_audit_report(self, initial_rows, quality_report, quality_details, cluster_report, final_rows, instrument_report=None):
         """Build a pre-training audit report that explains how records were filtered or clustered."""
         report = {
@@ -518,10 +687,16 @@ class DataPreprocessor:
             'rows_after_clustering': int(cluster_report.get('rows_after_clustering', 0)),
             'rows_final_for_training': int(final_rows),
             'missing_or_unknown_labels': int(quality_report.get('dropped_missing_or_unknown', 0)),
+            'unmapped_who_cause_labels': int(quality_report.get('dropped_unmapped_who_cause', 0)),
+            'implausible_demographic_labels': int(quality_report.get('dropped_implausible_demographics', 0)),
+            'vman_dq_pregnancy_male_contradictions': int(quality_report.get('dropped_vman_dq_pregnancy_male_contradiction', 0)),
+            'vman_dq_low_ici_rows': int(quality_report.get('dropped_vman_dq_low_ici', 0)),
+            'vman_dq_ici_summary': quality_report.get('vman_dq_ici_summary', {}),
             'quality_mismatch_rows': int(quality_report.get('qc_mismatch_rows', 0)),
             'quality_agree_rows': int(quality_report.get('qc_agree_rows', 0)),
             'clustered_rare_labels': int(cluster_report.get('clustered_label_count', 0)),
             'filtered_causes': quality_details.get('filtered_missing_or_unknown', []),
+            'implausible_demographic_causes': quality_details.get('implausible_demographics', []),
             'inconsistent_causes': quality_details.get('inconsistent_causes', []),
             'clustered_causes': cluster_report.get('clustered_causes', []),
         }

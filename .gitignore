@@ -102,5 +102,12 @@ vmanenv
 *.xlsx
 data/
 
+# Bundled WHO instrument workbooks are real package resources (loaded via
+# instrument_dictionary.py's WORKBOOKS), not disposable data exports - the
+# blanket *.xlsx rule above would otherwise silently strip them from every
+# push, breaking instrument-dictionary loading on a fresh clone/install.
+!vman_ml/resources/va_instr_2016.xlsx
+!vman_ml/resources/va_instr_2022.xlsx
+
 # IDE files
 .DS_Store

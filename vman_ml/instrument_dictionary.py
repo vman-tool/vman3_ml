@@ -19,6 +19,17 @@ TARGET_ALIASES = {
     "cod_who_ucod": "pcva_ucod",
     "cod_who_icd": "pcva_ucod_icd",
     "pcva_ucod_icod": "pcva_ucod_icd",
+    # who_ucod / who_ucod_icd: target column names used in the 2026 training
+    # exports (train_2016_tz.csv, train_2022_es.csv, train_2022_ng.csv).
+    "who_ucod": "pcva_ucod",
+    "who_ucod_icd": "pcva_ucod_icd",
+    # pcva_icd10: train_2022_ng-1.csv's ICD column (despite the name, holds
+    # ICD-11 codes, e.g. '1F40.Y', 'KB21.0'). Without this alias the pipeline
+    # never saw pcva_ucod_icd and fell back to free-text matching on
+    # pcva_ucod's granular clinical labels ("Other severe and complicated
+    # plasmodium falciparum malaria"), which the WHO causelist text matcher
+    # mostly can't resolve - silently dropping ~83% of NG-1 from training.
+    "pcva_icd10": "pcva_ucod_icd",
 }
 
 EXCLUDED_TYPE_PREFIXES = (
