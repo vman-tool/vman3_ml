@@ -157,8 +157,8 @@ class CCVAPredictor:
 
     # Cause-of-death classes that require the decedent to be an adult female
     # who could plausibly be pregnant or post-partum. Never valid for a male
-    # decedent, or for a child/neonate decedent. Mirrors vman_dq's ICI C1/C7/C8
-    # biological-plausibility rules (pregnancy/maternal responses for a male
+    # decedent, or for a child/neonate decedent. Mirrors vman_dq's ICI C5
+    # biological-plausibility rule (pregnancy/maternal responses for a male
     # decedent), applied here to the model's output rather than input data.
     _MATERNAL_ONLY_CLASSES = frozenset({
         'Pregnancy-related sepsis',

@@ -222,10 +222,15 @@ class DataPreprocessor:
 
             feature_columns, _ = self._get_feature_columns(df, instrument_dictionary)
 
-            # Carry feature columns + WHO passthrough + narrative text side-by-side
+            # Carry feature columns + WHO passthrough + narrative text side-by-side.
+            # isadult/ischild/isneonatal are 'calculate' type in the xForm so
+            # _get_feature_columns excludes them as training features, but
+            # vman_dq's ICI rules C2-C4 (age-restricted questions) need them -
+            # carry them through too.
             passthrough = [
                 c for c in ['pcva_who_cod', 'pcva_ucod_icd',
-                             'pcva_who_major', 'pcva_who_broad', 'pcva_who_id']
+                             'pcva_who_major', 'pcva_who_broad', 'pcva_who_id',
+                             'isadult', 'ischild', 'isneonatal']
                             + NARRATIVE_COLS
                 if c in df.columns
             ]
@@ -318,8 +323,11 @@ class DataPreprocessor:
         dfs = [df[feature_columns]]
 
         # Non-feature columns carried through the pipeline for QC and audit
-        # (dropped from X before returning)
-        _NON_FEATURE = ['pcva_ucod_icd', 'pcva_who_major', 'pcva_who_broad', 'pcva_who_id']
+        # (dropped from X before returning). isadult/ischild/isneonatal are
+        # 'calculate' type in the xForm so not real training features, but
+        # vman_dq's ICI rules C2-C4 need them - see combine_datasets().
+        _NON_FEATURE = ['pcva_ucod_icd', 'pcva_who_major', 'pcva_who_broad', 'pcva_who_id',
+                         'isadult', 'ischild', 'isneonatal']
         passthrough_cols = [
             col for col in _NON_FEATURE
             if col in df.columns and col != target_col
@@ -615,26 +623,20 @@ class DataPreprocessor:
     def _apply_vman_dq_quality_filter(self, df, report, min_ici: float = 70.0):
         """Drop training rows using vman_dq's Internal Consistency Index (ICI):
 
-        1. Any row where vman_dq's own C1/C8 rules find the RAW symptom data
+        1. Any row where vman_dq's own C5 rule finds the RAW symptom data
            itself contradictory on a pregnancy/maternal-vs-sex question
-           (pregnancy, or maternal-death review questions answered for a
+           (a female-only pregnancy/maternal-health question answered for a
            male decedent) is dropped outright, regardless of overall ICI
            score - this is the same class of "maternal on man"
            physician/data-entry error targeted above, but caught from the
            underlying interview data rather than the label.
 
-           C7 (id10109/id10110 answered for a male) is deliberately NOT
-           included here: those two fields ask whether a delivered baby
-           moved / breathed after birth (stillbirth-vs-live-birth
-           questions), not a pregnancy symptom - they are legitimately
-           answered "yes" for a male neonatal decedent. Empirically, ~400 of
-           ~12k combined training rows hit this "C7 violation" across TZ/
-           ES/NG-1/NG-2, and every sampled case was a genuine male neonatal
-           death, not a data error. Using it as an exclusion here would
-           systematically strip real male neonatal deaths from training.
-           This looks like a mislabeled rule in vman_dq's C7 itself
-           (see vman_dq/dqa.py ICI_RULE_DESCRIPTIONS) and is worth fixing
-           upstream, but until then this filter must not rely on it.
+           vman_dq's rule IDs were renumbered when its ICI indicator was
+           redesigned (see vman_dq/dqa.py's module docstring): C5 is now
+           the comprehensive pregnancy/maternal-vs-sex check (5
+           hand-verified fields including id10305), replacing what used to
+           be split across two narrower rules also then called C1 and C8.
+           Update this reference if vman_dq's rule IDs change again.
         2. Any row whose overall ICI falls in vman_dq's published "Critical"
            tier (< 70%, per the manuscript's own tier boundaries) is dropped
            as having too many internal contradictions elsewhere to trust as
@@ -653,7 +655,7 @@ class DataPreprocessor:
 
         ici, flags, _ = compute_ici(df)
 
-        pregnancy_rules = [r for r in ('C1', 'C8') if r in flags.columns]
+        pregnancy_rules = [r for r in ('C5',) if r in flags.columns]
         pregnancy_violation = (
             flags[pregnancy_rules].any(axis=1) if pregnancy_rules
             else pd.Series(False, index=df.index)
@@ -674,7 +676,7 @@ class DataPreprocessor:
 
         if self.verbose and drop_mask.any():
             print(f"vman_dq quality filter: dropping {int(pregnancy_violation.sum())} record(s) with "
-                  f"pregnancy/maternal-vs-sex contradictions in the raw interview data (C1/C7/C8), "
+                  f"pregnancy/maternal-vs-sex contradictions in the raw interview data (C5), "
                   f"and {int(low_ici.sum())} further record(s) in the ICI Critical tier (<{min_ici}%).")
 
         return df.loc[~drop_mask].copy(), report
