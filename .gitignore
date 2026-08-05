@@ -102,12 +102,18 @@ vmanenv
 *.xlsx
 data/
 
-# Bundled WHO instrument workbooks are real package resources (loaded via
-# instrument_dictionary.py's WORKBOOKS), not disposable data exports - the
-# blanket *.xlsx rule above would otherwise silently strip them from every
-# push, breaking instrument-dictionary loading on a fresh clone/install.
-!vman_ml/resources/va_instr_2016.xlsx
-!vman_ml/resources/va_instr_2022.xlsx
+# vman_ml/resources/ bundles the real WHO instrument workbooks - the three
+# whova_*_instr_*.xlsx files are package resources loaded by
+# instrument_dictionary.py's WORKBOOKS at runtime (2016_tz/2022_tz/2022_es);
+# who_va_instr_mapping.csv is vman_dq's ICI hand-verification audit trail
+# (referenced from vman3_dq's README.md / dqa.py docstring), not code-loaded
+# by anything. The blanket *.xlsx/*.csv rules above would otherwise silently
+# strip all of these from every push - who_va_instr_mapping is CSV (plain
+# flat sheet); the rest stay xlsx (linked survey/choices/settings sheets).
+!vman_ml/resources/who_va_instr_mapping.csv
+!vman_ml/resources/whova_2016_instr_tz.xlsx
+!vman_ml/resources/whova_2022_instr_es.xlsx
+!vman_ml/resources/whova_2022_instr_tz.xlsx
 
 # IDE files
 .DS_Store

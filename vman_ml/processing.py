@@ -279,8 +279,9 @@ class DataPreprocessor:
             target_col:                  Target column name. Default 'pcva_who_cod'.
                                          Pass None for prediction mode.
             source_path:                 Path hint used for instrument version detection.
-            instrument_version:          Override instrument version ('2016', '2022', or
-                                         'combined' when multi-dataset training).
+            instrument_version:          Override instrument version ('2016_tz', '2022_tz',
+                                         '2022_es', or 'combined' when multi-dataset
+                                         training).
             preselected_feature_columns: When provided (multi-dataset mode), skip
                                          instrument detection and feature selection and
                                          use this list directly.  combine_datasets()

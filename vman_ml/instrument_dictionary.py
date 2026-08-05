@@ -11,9 +11,11 @@ RESOURCE_DIR = PACKAGE_DIR / "resources"
 DICTIONARY_DIR = RESOURCE_DIR / "dictionaries"
 
 WORKBOOKS = {
-    "2016": RESOURCE_DIR / "va_instr_2016.xlsx",
-    "2022": RESOURCE_DIR / "va_instr_2022.xlsx",
+    "2016_tz": RESOURCE_DIR / "whova_2016_instr_tz.xlsx",
+    "2022_tz": RESOURCE_DIR / "whova_2022_instr_tz.xlsx",
+    "2022_es": RESOURCE_DIR / "whova_2022_instr_es.xlsx",
 }
+PATH_TO_VERSION = {path: version for version, path in WORKBOOKS.items()}
 
 TARGET_ALIASES = {
     "cod_who_ucod": "pcva_ucod",
@@ -66,6 +68,19 @@ def normalize_column_name(value):
     text = re.sub(r"[^a-z0-9_]+", "", text)
     text = re.sub(r"_+", "_", text)
     return text.strip("_")
+
+
+def _parse_version_country(text):
+    """Extract (year, country) from a filename stem or version string.
+
+    'whova_2022_instr_es' -> ('2022', 'es'); 'va_2016_tz' -> ('2016', 'tz');
+    'va_instr_2016' (no country suffix) -> ('2016', None). Returns
+    (None, None) when no 4-digit 20xx year is found at all.
+    """
+    match = re.search(r"(20\d{2})(?:[^0-9]*?_([a-z]{2}))?$", text.lower())
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
 
 
 def _clean_value(value):
@@ -146,7 +161,11 @@ def _sheet_rows_as_dicts(worksheet):
 
 def _build_dictionary_from_workbook(workbook_path):
     workbook_path = Path(workbook_path)
-    version = "2016" if "2016" in workbook_path.stem else "2022" if "2022" in workbook_path.stem else workbook_path.stem
+    if workbook_path in PATH_TO_VERSION:
+        version = PATH_TO_VERSION[workbook_path]
+    else:
+        year, country = _parse_version_country(workbook_path.stem)
+        version = f"{year}_{country}" if year and country else (year or workbook_path.stem)
     workbook = load_workbook(workbook_path, read_only=True, data_only=True)
 
     survey_sheet = workbook["survey"]
@@ -264,7 +283,7 @@ def load_instrument_dictionary(version_or_path):
         return _build_dictionary_from_workbook(path)
 
     version = str(version_or_path).strip().lower()
-    if version in {"2016", "2022"}:
+    if version in WORKBOOKS:
         json_path = _dictionary_json_path(version)
         if json_path.exists():
             with open(json_path, "r", encoding="utf-8") as handle:
@@ -284,45 +303,57 @@ def load_instrument_dictionaries():
     return {version: load_instrument_dictionary(version) for version in WORKBOOKS}
 
 
-def detect_instrument_version(df, source_path=None, dictionaries=None):
-    normalized_columns = {normalize_column_name(column) for column in df.columns}
-    source_text = normalize_column_name(Path(source_path).stem) if source_path else ""
-
-    if "2022" in source_text and "2016" not in source_text:
-        return {
-            "version": "2022",
-            "scores": {"2016": 0, "2022": 1},
-            "reason": "source_path_hint",
-        }
-
-    if "2016" in source_text and "2022" not in source_text:
-        return {
-            "version": "2016",
-            "scores": {"2016": 1, "2022": 0},
-            "reason": "source_path_hint",
-        }
-
-    dictionaries = dictionaries or load_instrument_dictionaries()
+def _score_dictionaries(normalized_columns, dictionaries):
     scores = {}
     for version, dictionary in dictionaries.items():
         survey_overlap = len(normalized_columns.intersection(dictionary.get("survey_columns", [])))
         feature_overlap = len(normalized_columns.intersection(dictionary.get("feature_columns", [])))
         score = survey_overlap + feature_overlap * 2
 
-        if version == "2022":
+        if version.startswith("2022"):
             if {"pcva_who_cod", "pcva_who_major", "pcva_who_broad"}.intersection(normalized_columns):
                 score += 10
             if any(column.startswith("addendum_") for column in normalized_columns):
                 score += 5
 
-        if version == "2016" and {"pcva_who_cod", "pcva_who_major", "pcva_who_broad"}.intersection(normalized_columns):
+        if version.startswith("2016") and {"pcva_who_cod", "pcva_who_major", "pcva_who_broad"}.intersection(normalized_columns):
             score -= 2
 
         scores[version] = score
+    return scores
 
-    best_version = max(scores, key=scores.get)
+
+def detect_instrument_version(df, source_path=None, dictionaries=None):
+    normalized_columns = {normalize_column_name(column) for column in df.columns}
+    dictionaries = dictionaries or load_instrument_dictionaries()
+
+    if source_path:
+        year, country = _parse_version_country(Path(source_path).stem)
+        if year:
+            exact_key = f"{year}_{country}" if country else None
+            if exact_key in dictionaries:
+                return {
+                    "version": exact_key,
+                    "scores": {exact_key: 1},
+                    "reason": "source_path_hint",
+                }
+
+            # Year is known from the filename (e.g. "va_2022_ng") but no
+            # workbook exists for that exact country - score against every
+            # variant for that year and pick the closest, rather than
+            # guessing a single default or refusing to return a version.
+            year_candidates = {k: v for k, v in dictionaries.items() if k.startswith(year)}
+            if year_candidates:
+                scores = _score_dictionaries(normalized_columns, year_candidates)
+                return {
+                    "version": max(scores, key=scores.get),
+                    "scores": scores,
+                    "reason": "nearest_variant_no_exact_match",
+                }
+
+    scores = _score_dictionaries(normalized_columns, dictionaries)
     return {
-        "version": best_version,
+        "version": max(scores, key=scores.get),
         "scores": scores,
         "reason": "column_overlap",
     }

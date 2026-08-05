@@ -1,0 +1,258 @@
+Category,2016_Type,2016_Name,2016_Label,2022_Type,2022_Name,2022_Label,Mapping_Status
+## 1. GENERAL QUESTIONS (All Ages),get start time,start-time,Start,get start time,start-time,Start,Mapped
+## 1. GENERAL QUESTIONS (All Ages),get end time,end,End,get end time,end,End,Mapped
+## 1. GENERAL QUESTIONS (All Ages),get today,today,Today,get today,today,Today,Mapped
+## 1. GENERAL QUESTIONS (All Ages),get device id,deviceid,Device ID,get device id,deviceid,Device ID,Mapped
+## 1. GENERAL QUESTIONS (All Ages),phonenumber,phonenumber,PhoneNumber,phonenumber,phonenumber,PhoneNumber,Mapped
+## 1. GENERAL QUESTIONS (All Ages),-,-,-,audit,audit,-,NEW
+## 1. GENERAL QUESTIONS (All Ages),begin group,intro,Introduction,begin group,intro,Introduction,Mapped
+## 1. GENERAL QUESTIONS (All Ages),note,welcome,Welcome to WHO VA 1.5.3 TZ,note,welcome,Welcome to WHO VA 2022 TZ,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,D2SN,Death Notification Number,text,D2SN,Death Notification Number,Mapped
+## 1. GENERAL QUESTIONS (All Ages),end group,-,-,end group,-,-,Mapped
+## 1. GENERAL QUESTIONS (All Ages),begin group,Id10010_group,Interviewer Identification,begin group,Interviewer,VA interviewer,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10010,Name of VA interviewer,text,Id10010,Name of VA interviewer,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10010Phone,Phone number of VA interviewer,-,-,-,REMOVED
+## 1. GENERAL QUESTIONS (All Ages),integer,Id10010a,Age of VA interviewer,integer,Id10010a,Age of VA interviewer,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one select_2,Id10010b,Sex of VA interviewer,select_one select_2,Id10010b,Sex of VA interviewer,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10010c,ID of VA interviewer,text,Id10010c,ID of VA interviewer,Mapped
+## 1. GENERAL QUESTIONS (All Ages),-,-,-,select_one language,language,Interview language,NEW
+## 1. GENERAL QUESTIONS (All Ages),today,Id10012,Date of the interview,today,Id10012,Date of the interview,Mapped
+## 1. GENERAL QUESTIONS (All Ages),end group,-,-,end group,-,-,Mapped
+## 1. GENERAL QUESTIONS (All Ages),begin group,presets,Preset HIV-Malaria,begin group,presets,Preset HIV-Malaria,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one HIGH_LOW_VERY,Id10002,HIV/AIDS mortality region,select_one HIGH_LOW_VERY,Id10002,HIV/AIDS mortality region,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one HIGH_LOW_VERY,Id10003,Malaria mortality region,select_one HIGH_LOW_VERY,Id10003,Malaria mortality region,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one select_58,Id10004,Season of death,select_one select_58,Id10004,Season of death,Mapped
+## 1. GENERAL QUESTIONS (All Ages),end group,-,-,end group,-,-,Mapped
+## 1. GENERAL QUESTIONS (All Ages),begin group,respondent_backgr,Respondent information,begin group,respondent_backgr,Respondent information,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one region,Id10005R,Region,select_one region,Id10005R,Region,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one district,Id10005D,District,select_one district,Id10005D,District,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10005Dother,Other District,text,Id10005Dother,Other District,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one ward,Id10005W,Ward,select_one ward,Id10005W,Ward,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one shehia,Id10005S,Shehia,select_one shehia,Id10005S,Shehia,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10005V,Village/street,text,Id10005V,Village/street,Mapped
+## 1. GENERAL QUESTIONS (All Ages),end group,-,-,end group,-,-,Mapped
+## 1. GENERAL QUESTIONS (All Ages),begin group,Id10007_group,Respondent Identification,begin group,respondent_backgr1,Respondent Identification,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10007,Name of respondent,text,Id10007,Name of respondent,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one select_2,Id10007a,Sex of respondent,select_one select_2,Id10007a,Sex of respondent,Mapped
+## 1. GENERAL QUESTIONS (All Ages),integer,Id10007b,Age of respondent,integer,Id10007b,Age of respondent,Mapped
+## 1. GENERAL QUESTIONS (All Ages),text,Id10007Phone,Phone number,text,Id10007Phone,Phone number,Mapped
+## 1. GENERAL QUESTIONS (All Ages),end group,-,-,end group,-,-,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one select_32,Id10008,Relationship to deceased,select_one select_32,Id10008,Relationship to deceased,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one YES_NO_DK_REF,Id10009,Lived with deceased,select_one YES_NO_DK_REF,Id10009,Lived with deceased,Mapped
+## 1. GENERAL QUESTIONS (All Ages),select_one YES_NO,Id10013,Respondent gave consent,select_one YES_NO,Id10013,Respondent gave consent,Mapped
+## 1. GENERAL QUESTIONS (All Ages),start,Id10011,Start time,start,Id10011,Start time,Mapped
+## 1. GENERAL QUESTIONS (All Ages),begin group,consented,Consent obtained,begin group,consented,Skip if not consented,Mapped
+## 1. GENERAL QUESTIONS (All Ages),begin group,deceased_CRVS,Deceased information,begin group,deceased_CRVS,Deceased information,Mapped
+## 2. DECEASED INFORMATION (All Ages),begin group,info_on_deceased,Deceased info,begin group,info_on_deceased,Deceased info,Mapped
+## 2. DECEASED INFORMATION (All Ages),begin group,Id10017_group,Deceased ID,begin group,info_on_deceased1,Deceased ID,Mapped
+## 2. DECEASED INFORMATION (All Ages),text,Id10017,First name,text,Id10017,First name,Mapped
+## 2. DECEASED INFORMATION (All Ages),text,Id10018,Surname,text,Id10018,Surname,Mapped
+## 2. DECEASED INFORMATION (All Ages),select_one select_2,Id10019,Sex of deceased,select_one select_2,Id10019,Sex of deceased,Mapped
+## 2. DECEASED INFORMATION (All Ages),end group,-,-,end group,-,-,Mapped
+## 2. DECEASED INFORMATION (All Ages),select_one YES_NO_REF,Id10020,DOB known,select_one YES_NO_REF,Id10020,DOB known,Mapped
+## 2. DECEASED INFORMATION (All Ages),date,Id10021,Date of birth,date,Id10021,Date of birth,Mapped
+## 2. DECEASED INFORMATION (All Ages),select_one YES_NO_REF,Id10022,DOD known,select_one YES_NO_REF,Id10022,DOD known,Mapped
+## 2. DECEASED INFORMATION (All Ages),date,Id10023_a,DOD (with DOB),date,Id10023_a,DOD (with DOB),Mapped
+## 2. DECEASED INFORMATION (All Ages),date,Id10023_b,DOD (without DOB),date,Id10023_b,DOD (without DOB),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,Id10023,DOD (calculated),calculate,Id10023,DOD (calculated),Mapped
+## 2. DECEASED INFORMATION (All Ages),date,Id10024,Year of death,date,Id10024,Year of death,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInDays,Age in Days,calculate,ageInDays,Age in Days,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInDays2,Age in Days (alt),calculate,ageInDays2,Age in Days (alt),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInYears,Age in Years,calculate,ageInYears,Age in Years,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInYearsRemain,Years remainder,calculate,ageInYearsRemain,Years remainder,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInMonths,Age in Months,calculate,ageInMonths,Age in Months,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInMonthsRemain,Months remainder,calculate,ageInMonthsRemain,Months remainder,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isNeonatal1,Is Neonate (calc),calculate,isNeonatal1,Is Neonate (calc),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isChild1,Is Child (calc),calculate,isChild1,Is Child (calc),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isAdult1,Is Adult (calc),calculate,isAdult1,Is Adult (calc),Mapped
+## 2. DECEASED INFORMATION (All Ages),note,displayAgeNeonate,Age display - Neonate,note,displayAgeNeonate,Age display - Neonate,Mapped
+## 2. DECEASED INFORMATION (All Ages),note,displayAgeChild,Age display - Child,note,displayAgeChild,Age display - Child,Mapped
+## 2. DECEASED INFORMATION (All Ages),note,displayAgeAdult,Age display - Adult,note,displayAgeAdult,Age display - Adult,Mapped
+## 2. DECEASED INFORMATION (All Ages),select_one age_group,age_group,Age group,select_one age_group,age_group,Age group,Mapped
+## 2. DECEASED INFORMATION (All Ages),integer,age_neonate_days,Neonate days,integer,age_neonate_days,Neonate days,Mapped
+## 2. DECEASED INFORMATION (All Ages),-,-,-,integer,age_neonate_hours,Neonate hours,NEW
+## 2. DECEASED INFORMATION (All Ages),select_one units,age_child_unit,Child age unit,select_one unitsc,age_child_unit,Child age unit,Mapped
+## 2. DECEASED INFORMATION (All Ages),integer,age_child_days,Child days,integer,age_child_days,Child days,Mapped
+## 2. DECEASED INFORMATION (All Ages),integer,age_child_months,Child months,integer,age_child_months,Child months,Mapped
+## 2. DECEASED INFORMATION (All Ages),integer,age_child_years,Child years,integer,age_child_years,Child years,Mapped
+## 2. DECEASED INFORMATION (All Ages),integer,age_adult,Adult years,integer,age_adult,Adult years,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInMonthsByYear,Age in Months,calculate,ageInMonthsByYear,Age in Months,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInYears2,Age in Years,calculate,ageInYears2,Age in Years,Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isNeonatal2,Is Neonate (manual),calculate,isNeonatal2,Is Neonate (manual),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isChild2,Is Child (manual),calculate,isChild2,Is Child (manual),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isAdult2,Is Adult (manual),calculate,isAdult2,Is Adult (manual),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isNeonatal,Is Neonate (final),calculate,isNeonatal,Is Neonate (final),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isChild,Is Child (final),calculate,isChild,Is Child (final),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,isAdult,Is Adult (final),calculate,isAdult,Is Adult (final),Mapped
+## 2. DECEASED INFORMATION (All Ages),calculate,ageInDaysNeonate,Age days (neonate),calculate,ageInDaysNeonate,Age days (neonate),Mapped
+## 2. DECEASED INFORMATION (All Ages),note,Id10008_check,Relationship check,note,Id10008_check,Relationship check,Mapped
+## 2. DECEASED INFORMATION (All Ages),select_one select_18,Id10058,Place of death,select_one select_18,Id10058,Place of death,Mapped
+## 2. DECEASED INFORMATION (All Ages),text,Id10058name,Facility name,-,-,-,REMOVED
+## 2. DECEASED INFORMATION (All Ages),text,Id10058Other,Other specify,text,Id10058_other,Other specify,Mapped
+## 2. DECEASED INFORMATION (All Ages),select_one YES_NO,Id10058b,Body taken to facility,-,-,-,REMOVED
+## 2. DECEASED INFORMATION (All Ages),text,Id10058c,Which facility,-,-,-,REMOVED
+## 2. DECEASED INFORMATION (All Ages),select_one YES_NO,Id10051,Additional demographics,select_one YES_NO,Id10051,Additional demographics,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one select_500,Id10052,Citizenship,select_one select_500,Id10052,Citizenship,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10053,Ethnicity,text,Id10053,Ethnicity,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),begin group,Id10054_group,Place of birth,begin group,Id10054_group,Place of birth,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one region,Id10054R,Region of birth,select_one region,Id10054R,Region of birth,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one district,Id10054D,District of birth,select_one district,Id10054D,District of birth,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10054D_other,Other district,text,Id10054D_other,Other district,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one shehia,Id10054S,Shehia of birth,select_one shehia,Id10054S,Shehia of birth,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10054V,Village of birth,text,Id10054V,Village of birth,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),end group,-,-,end group,-,-,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10055,Place of residence,text,Id10055,Place of residence,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one death_where,Id10057,Death occurred where,select_one death_where,Id10057,Death occurred where,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),begin group,Id10057_group,Within country,begin group,Id10057_group,Within country,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one region,Id10057R,Region of death,select_one region,Id10057R,Region of death,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one district,Id10057D,District of death,select_one district,Id10057D,District of death,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10057D_other,Other district,text,Id10057D_other,Other district,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),select_one shehia,Id10057S,Shehia of death,select_one shehia,Id10057S,Shehia of death,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10057V,Village of death,text,Id10057V,Village of death,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),end group,-,-,end group,-,-,Mapped
+## 3. DEMOGRAPHIC DETAILS (General),text,Id10057_death_outside,Death outside country,text,Id10057_death_outside,Death outside country,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one select_19,Id10059,Marital status,select_one select_19,Id10059,Marital status,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO,Id10060_check,Marriage date available,-,-,-,REMOVED
+## 4. ADULT-ONLY QUESTIONS,date,Id10060,Date of marriage,-,-,-,REMOVED
+## 4. ADULT-ONLY QUESTIONS,select_one select_23,Id10063,Highest education,select_one select_23,Id10063,Highest education,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10064,Able to read/write,select_one YES_NO_DK_REF,Id10064,Able to read/write,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one select_25,Id10065,Economic activity,select_one select_25,Id10065,Economic activity,Mapped
+## 4. ADULT-ONLY QUESTIONS,text,Id10066,Occupation,text,Id10066,Occupation,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10487,COVID-19 contact,select_one YES_NO_DK_REF,Id10487,COVID-19 contact,Mapped
+## 4. ADULT-ONLY QUESTIONS,-,-,-,select_one YES_NO_DK_REF,Id10485,Extreme fatigue,NEW
+## 4. ADULT-ONLY QUESTIONS,-,-,-,select_one YES_NO_DK_REF,Id10486,Loss of smell/taste,NEW
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10170,Unable to do daily routines,select_one YES_NO_DK_REF,Id10170,Unable to do daily routines,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10171,Breathless lying flat,select_one YES_NO_DK_REF,Id10171,Breathless lying flat,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10173_a,Wheezing,select_one YES_NO_DK_REF,Id10173_a,Wheezing,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10175,Chest pain severe,select_one YES_NO_DK_REF,Id10175,Chest pain severe,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10212,Mental confusion,select_one YES_NO_DK_REF,Id10212,Mental confusion,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one units_2,Id10213_units,Mental confusion duration unit,select_one units_2,Id10213_units,Mental confusion duration unit,Mapped
+## 4. ADULT-ONLY QUESTIONS,integer,Id10213_a,Mental confusion days,integer,Id10213_a,Mental confusion days,Mapped
+## 4. ADULT-ONLY QUESTIONS,integer,Id10213_b,Mental confusion months,integer,Id10213_b,Mental confusion months,Mapped
+## 4. ADULT-ONLY QUESTIONS,calculate,Id10213,Mental confusion months,calculate,Id10213,Mental confusion months,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10170,Unable to carry daily routines,select_one YES_NO_DK_REF,Id10170,Unable to carry daily routines,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10171,Breathless lying flat,select_one YES_NO_DK_REF,Id10171,Breathless lying flat,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10237,Shingles/herpes zoster,select_one YES_NO_DK_REF,Id10237,Shingles/herpes zoster,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10254,Lumps/sores in mouth,select_one YES_NO_DK_REF,Id10254,Lumps/sores in mouth,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10253,Lumps elsewhere,select_one YES_NO_DK_REF,Id10253,Lumps elsewhere,Mapped
+## 4. ADULT-ONLY QUESTIONS,begin group,risk_factors,Risk factors,begin group,risk_factors,Risk factors,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10411,Drink alcohol,select_one YES_NO_DK_REF,Id10411,Drink alcohol,Mapped
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10412,Use tobacco,-,-,-,REMOVED
+## 4. ADULT-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10413,Smoke tobacco,select_one YES_NO_DK_REF,Id10413,Smoke tobacco,Mapped
+## 4. ADULT-ONLY QUESTIONS,-,-,-,select_one select_535,Id10413_a,Smoke duration unit,NEW
+## 4. ADULT-ONLY QUESTIONS,-,-,-,integer,Id10413_d,Smoke duration number,NEW
+## 4. ADULT-ONLY QUESTIONS,-,-,-,select_one YES_NO_DK_REF,Id10413_b,Smoke daily,NEW
+## 4. ADULT-ONLY QUESTIONS,select_one select_306,Id10414,Kind of tobacco,select_one select_306,Id10414,Chew/sniff tobacco,Mapped
+## 4. ADULT-ONLY QUESTIONS,-,-,-,select_one select_535,Id10414_a,Chew/sniff duration unit,NEW
+## 4. ADULT-ONLY QUESTIONS,-,-,-,integer,Id10414_d,Chew/sniff duration number,NEW
+## 4. ADULT-ONLY QUESTIONS,-,-,-,select_one YES_NO_DK_REF,Id10414_b,Chew/sniff daily,NEW
+## 4. ADULT-ONLY QUESTIONS,integer,Id10415,Cigarettes daily,-,-,-,REMOVED
+## 4. ADULT-ONLY QUESTIONS,integer,Id10416,Tobacco use times per day,-,-,-,REMOVED
+## 4. ADULT-ONLY QUESTIONS,end group,-,-,end group,-,-,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10408,Growing normally,select_one YES_NO_DK_REF,Id10408,Growing normally,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one units_4,Id10352_units,Age at illness onset unit,select_one units_4,Id10352_units,Age at illness onset unit,Mapped
+## 5. CHILD-ONLY QUESTIONS,integer,Id10352_a,Age at illness months,integer,Id10352_a,Age at illness months,Mapped
+## 5. CHILD-ONLY QUESTIONS,integer,Id10352_b,Age at illness years,integer,Id10352_b,Age at illness years,Mapped
+## 5. CHILD-ONLY QUESTIONS,calculate,Id10352,Age at illness years,calculate,Id10352,Age at illness years,Mapped
+## 5. CHILD-ONLY QUESTIONS,begin group,neonatal_childA,Child questions A,begin group,neonatal_childA,Child questions A,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10354,Multiple birth,select_one YES_NO_DK_REF,Id10354,Multiple birth,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one select_219,Id10355,Birth order,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10356,Mother alive,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one select_221,Id10357,Mother died when,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,begin group,moth_death,Mother death,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one units_5,Id10358_units,Mother death unit,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,integer,Id10358,Mother death months,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,integer,Id10359,Mother death days,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,integer,Id10359_a,Mother death weeks,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,end group,-,-,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one select_223,Id10360,Where born,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10361,Professional assistance at birth,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10362,Usual size at birth,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10363,Smaller than usual,select_one YES_NO_DK_REF,Id10363,Smaller than usual,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10364,Very much smaller,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10365,Larger than usual,select_one YES_NO_DK_REF,Id10365,Larger than usual,Mapped
+## 5. CHILD-ONLY QUESTIONS,note,id1036X_check,Size validation,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,integer,Id10366,Birth weight (grammes),integer,Id10366,Birth weight (grammes),Mapped
+## 5. CHILD-ONLY QUESTIONS,-,-,-,select_one YES_NO,Id10366_check,Child health card available,NEW
+## 5. CHILD-ONLY QUESTIONS,-,-,-,begin group,g10366,Birth weight group,NEW
+## 5. CHILD-ONLY QUESTIONS,-,-,-,note,n10366,Birth weight note,NEW
+## 5. CHILD-ONLY QUESTIONS,-,-,-,end group,-,-,NEW
+## 5. CHILD-ONLY QUESTIONS,integer,Id10367,Pregnancy length (months),integer,Id10367,Pregnancy length (months),Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10368,Complications late pregnancy,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10369,Complications labour/delivery,select_one YES_NO_DK_REF,Id10369,Complications labour/delivery,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10370,Physical abnormality,select_one YES_NO_DK_REF,Id10370,Physical abnormality,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10371,Swelling/defect on back,select_one YES_NO_DK_REF,Id10371,Swelling/defect on back,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10372,Very large head,select_one YES_NO_DK_REF,Id10372,Very large head,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10373,Very small head,select_one YES_NO_DK_REF,Id10373,Very small head,Mapped
+## 5. CHILD-ONLY QUESTIONS,integer,Id10394,Mother's previous births,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,end group,-,-,end group,-,-,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10166,Fast breathing,select_one YES_NO_DK_REF,Id10166,Fast breathing,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10172,Chest in-drawing,select_one YES_NO_DK_REF,Id10172,Chest in-drawing,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_multiple select_501,Id10173_nc,Breathing sounds (child),select_multiple select_501,Id10173_nc,Breathing sounds (child),Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10269,Sunken eyes,select_one YES_NO_DK_REF,Id10269,Sunken eyes,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10270,Drank more water,-,-,-,REMOVED
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10271,Suckle in first 24h,select_one YES_NO_DK_REF,Id10271,Suckle in first 24h,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10272,Suckle normally,select_one YES_NO_DK_REF,Id10272,Suckle normally,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10273,Stop suckling,select_one YES_NO_DK_REF,Id10273,Stop suckling,Mapped
+## 5. CHILD-ONLY QUESTIONS,integer,Id10274_a,Stop suckling days,integer,Id10274_a,Stop suckling days,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one units_2,Id10274_units,Stop suckling unit,select_one units_2,Id10274_units,Stop suckling unit,Mapped
+## 5. CHILD-ONLY QUESTIONS,integer,Id10274_b,Stop suckling days,integer,Id10274_b,Stop suckling days,Mapped
+## 5. CHILD-ONLY QUESTIONS,integer,Id10274_c,Stop suckling months,integer,Id10274_c,Stop suckling months,Mapped
+## 5. CHILD-ONLY QUESTIONS,calculate,Id10274,Stop suckling days calc,calculate,Id10274,Stop suckling days calc,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10275,Convulsions <24h,select_one YES_NO_DK_REF,Id10275,Convulsions <24h,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10276,Convulsions >24h,select_one YES_NO_DK_REF,Id10276,Convulsions >24h,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10277,Body stiff/arched,select_one YES_NO_DK_REF,Id10277,Body stiff/arched,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10278,Bulging fontanelle,select_one YES_NO_DK_REF,Id10278,Bulging fontanelle,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10279,Sunken fontanelle,select_one YES_NO_DK_REF,Id10279,Sunken fontanelle,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10281,Unresponsive/unconscious,select_one YES_NO_DK_REF,Id10281,Unresponsive/unconscious,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10282,Unresponsive <24h,select_one YES_NO_DK_REF,Id10282,Unresponsive <24h,Mapped
+## 5. CHILD-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10283,Unresponsive >24h,select_one YES_NO_DK_REF,Id10283,Unresponsive >24h,Mapped
+## 6. NEONATE-ONLY QUESTIONS,begin group,stillbirth,Stillbirth verification,begin group,stillbirth,Stillbirth verification,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10104,Baby ever cry,select_one YES_NO_DK_REF,Id10104,Baby ever cry,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10105,Cry immediately,select_one YES_NO_DK_REF,Id10105,Cry immediately,Mapped
+## 6. NEONATE-ONLY QUESTIONS,integer,Id10106,Minutes to first cry,integer,Id10106,Minutes to first cry,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10107,Stop being able to cry,select_one YES_NO_DK_REF,Id10107,Stop being able to cry,Mapped
+## 6. NEONATE-ONLY QUESTIONS,integer,Id10108,Hours before death stopped crying,-,-,-,REMOVED
+## 6. NEONATE-ONLY QUESTIONS,-,-,-,select_one YES_NO_DK_REF,Id10377,Stop moving in womb,NEW
+## 6. NEONATE-ONLY QUESTIONS,-,-,-,select_one select_532,Id10376,Stop moving before/after labour,NEW
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10109,Ever move after delivery,select_one YES_NO_DK_REF,Id10109,Ever move after delivery,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10110,Ever breathe,select_one YES_NO_DK_REF,Id10110,Ever breathe,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10111,Breathe immediately,select_one YES_NO_DK_REF,Id10111,Breathe immediately,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10112,Breathing problem,select_one YES_NO_DK_REF,Id10112,Breathing problem,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10113,Assistance to breathe,select_one YES_NO_DK_REF,Id10113,Assistance to breathe,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10114,Born dead,select_one YES_NO_DK_REF,Id10114,Born dead,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10115,Bruises/injury,select_one YES_NO_DK_REF,Id10115,Bruises/injury,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10116,Body soft/macerated,select_one YES_NO_DK_REF,Id10116,Body soft/macerated,Mapped
+## 6. NEONATE-ONLY QUESTIONS,end group,-,-,end group,-,-,Mapped
+## 6. NEONATE-ONLY QUESTIONS,begin group,neonatal_childC,Neonate questions C,begin group,neonatal_childC,Neonate questions C,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10284,Cold to touch,select_one YES_NO_DK_REF,Id10284,Cold to touch,Mapped
+## 6. NEONATE-ONLY QUESTIONS,integer,Id10285,Age when cold started,-,-,-,REMOVED
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10286,Lethargic,select_one YES_NO_DK_REF,Id10286,Lethargic,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10287,Redness/pus from cord,select_one YES_NO_DK_REF,Id10287,Redness/pus from cord,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10288,Skin ulcers,select_one YES_NO_DK_REF,Id10288,Skin ulcers,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10289,Yellow skin/palms,select_one YES_NO_DK_REF,Id10289,Yellow skin/palms,Mapped
+## 6. NEONATE-ONLY QUESTIONS,select_one YES_NO_DK_REF,Id10290,Appeared healthy then died,-,-,-,REMOVED
+## 6. NEONATE-ONLY QUESTIONS,end group,-,-,end group,-,-,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),begin group,pregnancy_women,Pregnancy and women,begin group,pregnancy_women,Pregnancy and women,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10294,Swelling/lump in breast,select_one YES_NO_DK_REF,Id10294,Swelling/lump/ulcer in breast,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10295,Ulcers in breast,-,-,-,REMOVED (merged)
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10296,Ever menstruated,select_one YES_NO_DK_REF,Id10296,Ever menstruated,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10297,Bleeding between periods,-,-,-,REMOVED
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10298,Bleeding excessive,-,-,-,REMOVED
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10301,Excessive vaginal bleeding week before death,select_one YES_NO_DK_REF,Id10301,Excessive vaginal bleeding week before death,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10299,Menopause,select_one YES_NO_DK_REF,Id10299,Menopause,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10300,Bleeding after menopause,select_one YES_NO_DK_REF,Id10300,Bleeding after menopause,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10302,Period overdue,select_one YES_NO_DK_REF,Id10302,Period overdue,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),integer,Id10303,Weeks overdue,integer,Id10303,Weeks overdue,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10304,Sharp abdominal pain before death,select_one YES_NO_DK_REF,Id10304,Sharp abdominal pain in first 3 months,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),-,-,-,select_one YES_NO_DK_REF,Id10304_a,Fainted with abdominal pain,NEW
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10305,Pregnant at death,select_one YES_NO_DK_REF,Id10305,Pregnant (not in labour) at death,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10306,Died within 6 weeks of delivery,select_one YES_NO_DK_REF,Id10306,Died within 6 weeks after delivery,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10307,Died >6 weeks after pregnant,-,-,-,REMOVED
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10308,Died <1 year after pregnant/delivery,select_one YES_NO_DK_REF,Id10308,Died <1 year after delivery/abortion/miscarriage,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),integer,Id10309,Months pregnant,integer,Id10309,Months pregnant,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF2,Id10310,Confirm not maternal death,select_one confirm,Id10310,Confirm not maternal death,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),note,Id10310_check,Validation note,-,-,-,REMOVED
+## 7. FEMALE-ONLY QUESTIONS (Adults),begin group,group_maternal,Maternal death questions,begin group,group_maternal,Maternal death questions,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10312,Died during labour/delivery,select_one YES_NO_DK_REF,Id10312,Died during labour/delivery,Mapped
+## 7. FEMALE-ONLY QUESTIONS (Adults),select_one YES_NO_DK_REF,Id10313,Died after delivering,select_one YES_NO_DK_REF,,,
