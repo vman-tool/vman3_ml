@@ -74,6 +74,10 @@ Examples:
                         help='Number of flagged records to send for LLM review (default 50).')
     parser.add_argument('--audit-cv-folds', type=int, default=5,
                         help='Cross-validation folds for cleanlab (default 5).')
+    parser.add_argument('--no-confirmation-weights', action='store_true',
+                        help='Disable sample-weight boosting for rows with a direct '
+                             'professional-confirmation answer matching their label '
+                             '(see DataPreprocessor.DEFAULT_CONFIRMATION_MAP). On by default.')
 
     args = parser.parse_args()
 
@@ -169,15 +173,33 @@ Examples:
         print(f"Audit report saved to {audit_report_path}")
 
     # ------------------------------------------------------------------ #
+    # Sample weights — boost rows with a direct professional-confirmation #
+    # answer matching their own label (see compute_confirmation_sample_   #
+    # weights). Computed here, on X, while it still has the raw           #
+    # confirmation columns (id10142 etc.) - narrative embedding above     #
+    # only adds columns, so this is unaffected either way.                #
+    # ------------------------------------------------------------------ #
+    sample_weight = (
+        None if args.no_confirmation_weights
+        else preprocessor.compute_confirmation_sample_weights(X, y)
+    )
+
+    # ------------------------------------------------------------------ #
     # Holdout split — 20% stratified, never seen during training          #
     # ------------------------------------------------------------------ #
     if isinstance(y, pd.DataFrame):
         y = y.squeeze()
     y = np.array(y).ravel()
 
-    X_train_raw, X_holdout_raw, y_train_raw, y_holdout_raw = _holdout_split(
-        X, y, test_size=0.2, stratify=y, random_state=0,
-    )
+    if sample_weight is not None:
+        X_train_raw, X_holdout_raw, y_train_raw, y_holdout_raw, w_train_raw, _w_holdout_raw = _holdout_split(
+            X, y, sample_weight, test_size=0.2, stratify=y, random_state=0,
+        )
+    else:
+        X_train_raw, X_holdout_raw, y_train_raw, y_holdout_raw = _holdout_split(
+            X, y, test_size=0.2, stratify=y, random_state=0,
+        )
+        w_train_raw = None
     print(
         f"Hold-out split: {len(X_train_raw):,} train / "
         f"{len(X_holdout_raw):,} test ({100 * len(X_holdout_raw) / len(y):.0f}%)",
@@ -188,7 +210,7 @@ Examples:
     # Train                                                                #
     # ------------------------------------------------------------------ #
     trainer = ModelTrainer(verbose=args.verbose)
-    trainer.train(X_train_raw, y_train_raw)
+    trainer.train(X_train_raw, y_train_raw, sample_weight=w_train_raw)
     trainer.save_model(preprocessor=preprocessor, version=preprocessor.instrument_version)
 
     # Internal val results (used for model selection during training)
