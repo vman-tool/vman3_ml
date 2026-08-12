@@ -165,6 +165,18 @@ class CCVAPredictor:
         'cluster_pregnancy_childbirth_and_puerperium_related_disorders',
     })
 
+    # Cause-of-death classes that, by WHO taxonomy definition, only apply to
+    # a neonate (death within the first 28 days of life) or a stillbirth -
+    # not merely rare in an older child or adult, but definitionally out of
+    # scope for them. Same kind of near-tautological implausibility as
+    # _MATERNAL_ONLY_CLASSES, just gated on the opposite direction (must be
+    # neonate, rather than must not be).
+    _NEONATE_ONLY_CLASSES = frozenset({
+        'Neonatal sepsis',
+        'cluster_neonatal_causes_of_death',
+        'cluster_stillbirths',
+    })
+
     @classmethod
     def _is_informative(cls, val) -> bool:
         """True when val adds something a human reader can act on."""
@@ -390,13 +402,13 @@ class CCVAPredictor:
         scaled  = self.scaler.transform(encoded)
         return scaled, dk_ood_mask
 
-    def _maternal_class_columns(self) -> np.ndarray:
-        """Column indices into predict_proba's output for maternal/pregnancy-only
-        classes (see _MATERNAL_ONLY_CLASSES), resolved through the label encoder.
-        Returns an empty array if none of those classes exist in this model.
+    def _class_columns(self, class_names: frozenset) -> np.ndarray:
+        """Column indices into predict_proba's output for the given class
+        names, resolved through the label encoder. Returns an empty array
+        if none of those classes exist in this model.
         """
         known = set(self.label_encoder.classes_)
-        present = [c for c in self._MATERNAL_ONLY_CLASSES if c in known]
+        present = [c for c in class_names if c in known]
         if not present:
             return np.array([], dtype=int)
         encoded = set(self.label_encoder.transform(present))
@@ -418,50 +430,63 @@ class CCVAPredictor:
         """Zero out probability mass for biologically implausible (record, class)
         combinations, then renormalise so each row still sums to 1.
 
-        Currently enforces one rule: maternal/pregnancy-related causes
-        (_MATERNAL_ONLY_CLASSES) cannot be the cause of death for a male
-        decedent or for a child/neonate decedent. This mirrors vman_dq's ICI
-        rules (pregnancy/maternal responses flagged for a male decedent) -
-        the same biological-plausibility check, applied to the model's
-        output instead of to input data quality.
+        Enforces two rules:
+        - Maternal/pregnancy-related causes (_MATERNAL_ONLY_CLASSES) cannot be
+          the cause of death for a male decedent or for a child/neonate
+          decedent.
+        - Neonate/stillbirth-only causes (_NEONATE_ONLY_CLASSES) cannot be the
+          cause of death for a decedent flagged as a child or an adult - they
+          are only defined for a death in the first 28 days of life.
+        Both mirror vman_dq's ICI biological-plausibility rules, applied here
+        to the model's output rather than to input data quality.
 
-        Silently returns probs unchanged if the expected demographic columns
-        (id10019, ischild, isneonatal) aren't present in cleaned_df, or if
-        none of the maternal-only classes exist in this model.
+        Silently leaves a rule's classes untouched if the demographic flag(s)
+        it depends on aren't present in cleaned_df, or if none of that rule's
+        classes exist in this model - and returns probs unchanged if neither
+        rule ends up applying to any row.
         """
-        maternal_cols = self._maternal_class_columns()
-        if maternal_cols.size == 0:
-            return probs
-
-        sex = self._col(cleaned_df, 'id10019')
-        is_male = (
-            sex.astype(str).str.strip().str.lower().eq('male').to_numpy()
-            if sex is not None else np.zeros(len(cleaned_df), dtype=bool)
-        )
-
         def _flag(name):
             s = self._col(cleaned_df, name)
             if s is None:
                 return np.zeros(len(cleaned_df), dtype=bool)
             return s.astype(str).str.strip().str.lower().isin(['1', 'yes', 'true']).to_numpy()
 
-        is_child_or_neonate = _flag('ischild') | _flag('isneonatal')
-        disallow = is_male | is_child_or_neonate
-        if not disallow.any():
-            return probs
+        sex = self._col(cleaned_df, 'id10019')
+        is_male = (
+            sex.astype(str).str.strip().str.lower().eq('male').to_numpy()
+            if sex is not None else np.zeros(len(cleaned_df), dtype=bool)
+        )
+        is_child = _flag('ischild')
+        is_neonate = _flag('isneonatal')
+        is_adult = _flag('isadult')
+
+        rules = (
+            (self._MATERNAL_ONLY_CLASSES, is_male | is_child | is_neonate),
+            (self._NEONATE_ONLY_CLASSES, is_child | is_adult),
+        )
 
         adjusted = probs.copy()
-        adjusted[np.ix_(disallow, maternal_cols)] = 0.0
+        any_disallowed = np.zeros(len(cleaned_df), dtype=bool)
+        for class_names, disallow in rules:
+            cols = self._class_columns(class_names)
+            if cols.size == 0 or not disallow.any():
+                continue
+            adjusted[np.ix_(disallow, cols)] = 0.0
+            any_disallowed |= disallow
+
+        if not any_disallowed.any():
+            return probs
+
         row_sums = adjusted.sum(axis=1)
         safe = row_sums > 0
-        renormalise = disallow & safe
+        renormalise = any_disallowed & safe
         if renormalise.any():
             adjusted[renormalise] = adjusted[renormalise] / row_sums[renormalise, None]
         # A row where every last bit of probability mass happened to sit on
-        # maternal-only classes (safe==False) falls back to the original
+        # now-disallowed classes (safe==False) falls back to the original
         # distribution rather than dividing by zero - this should be rare
         # enough in practice to just fall through to normal OOD handling.
-        never_safe = disallow & ~safe
+        never_safe = any_disallowed & ~safe
         if never_safe.any():
             adjusted[never_safe] = probs[never_safe]
         return adjusted
@@ -609,17 +634,28 @@ class CCVAPredictor:
                 )
                 lower, upper = self._wilson_ci(confidence, n_arr)
 
-                # Entropy-based OOD (primary signal for new models):
-                # Normalised entropy ∈ [0,1] — 0 = certain, 1 = uniform.
-                # More robust than raw confidence because it measures spread
-                # across ALL classes, not just the top-1 probability.
-                if self.ood_entropy_threshold is not None:
-                    ood_mask = norm_entropy > self.ood_entropy_threshold
-                elif self.ood_threshold is not None:
-                    # Fallback for old models without entropy threshold
-                    ood_mask = confidence < self.ood_threshold
-                else:
-                    ood_mask = np.zeros(len(predictions), dtype=bool)
+                # Entropy-based OOD (primary signal — normalised entropy ∈
+                # [0,1], 0 = certain, 1 = uniform; more robust than raw
+                # confidence because it measures spread across ALL classes,
+                # not just the top-1 probability) OR'd with confidence-based
+                # OOD when both are set. These used to be if/elif - setting
+                # ood_threshold silently discarded the model's calibrated
+                # entropy threshold in favour of the much cruder confidence
+                # check, even on a model that has a perfectly good entropy
+                # threshold of its own. Now a caller-supplied ood_threshold
+                # only adds an extra (typically stricter) net rather than
+                # replacing the better one.
+                entropy_mask = (
+                    norm_entropy > self.ood_entropy_threshold
+                    if self.ood_entropy_threshold is not None
+                    else np.zeros(len(predictions), dtype=bool)
+                )
+                confidence_mask = (
+                    confidence < self.ood_threshold
+                    if self.ood_threshold is not None
+                    else np.zeros(len(predictions), dtype=bool)
+                )
+                ood_mask = entropy_mask | confidence_mask
 
                 if self.verbose:
                     print(
