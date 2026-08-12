@@ -88,11 +88,23 @@ class ModelTrainer:
     #  Training                                                                #
     # ---------------------------------------------------------------------- #
 
-    def train(self, X, y, test_size=0.2, n_iter_search=10):
-        """Train all configured models and select the best by test macro-F1."""
+    def train(self, X, y, sample_weight=None, test_size=0.2, n_iter_search=10):
+        """Train all configured models and select the best by test macro-F1.
+
+        sample_weight, if given, must be a 1-D array aligned to X/y's row
+        order (see DataPreprocessor.compute_confirmation_sample_weights) -
+        it's carried through the same row-dropping and train/val split X and
+        y go through below, then passed to each model's .fit() so training
+        penalises misclassifying those rows more heavily. Never applied to
+        the held-out evaluation split - it only affects fitting, not scoring.
+        """
         if len(X) != len(y):
             raise ValueError(
                 f"Mismatched shapes: X has {len(X)} rows, y has {len(y)}."
+            )
+        if sample_weight is not None and len(sample_weight) != len(X):
+            raise ValueError(
+                f"sample_weight has {len(sample_weight)} entries, X has {len(X)} rows."
             )
 
         try:
@@ -138,6 +150,8 @@ class ModelTrainer:
             _audit_idx = [_audit_idx[i] for i in np.where(keep_mask)[0]]
             X_encoded = np.asarray(X_encoded)[keep_mask]
             y_encoded = np.asarray(y_encoded)[keep_mask]
+            if sample_weight is not None:
+                sample_weight = np.asarray(sample_weight)[keep_mask]
 
         # Re-map class indices to be consecutive starting at 0.
         # Dropping tiny classes leaves gaps (e.g. [0,1,2,4,5]) which causes
@@ -153,10 +167,18 @@ class ModelTrainer:
         # This is the internal train/val split used only for model comparison — the
         # caller in train.py holds out a separate 20% that train() never receives.
         X_enc_arr = np.asarray(X_encoded, dtype=float)
-        X_train, X_test, y_train, y_test = train_test_split(
-            X_enc_arr, np.asarray(y_encoded),
-            test_size=test_size, random_state=42, stratify=y_encoded,
-        )
+        if sample_weight is not None:
+            X_train, X_test, y_train, y_test, w_train, self._w_test = train_test_split(
+                X_enc_arr, np.asarray(y_encoded), np.asarray(sample_weight, dtype=float),
+                test_size=test_size, random_state=42, stratify=y_encoded,
+            )
+            self._w_train = w_train
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_enc_arr, np.asarray(y_encoded),
+                test_size=test_size, random_state=42, stratify=y_encoded,
+            )
+            self._w_train = None
 
         # Fit scaler on training rows ONLY — no leakage from val or external holdout
         self.scaler = StandardScaler()
@@ -188,6 +210,11 @@ class ModelTrainer:
             param_grid = _PARAM_GRIDS.get(name, {})
 
             search_n_jobs = _SEARCH_N_JOBS.get(name, -1)
+            # sample_weight is a fit param on the underlying estimator (both
+            # XGBClassifier and RandomForestClassifier accept it), forwarded
+            # through RandomizedSearchCV's **fit_params - it does not affect
+            # which CV folds are drawn, only the loss each fold optimises.
+            fit_params = {'sample_weight': self._w_train} if self._w_train is not None else {}
             try:
                 search = RandomizedSearchCV(
                     model,
@@ -199,14 +226,14 @@ class ModelTrainer:
                     n_jobs=search_n_jobs,
                     verbose=int(self.verbose),
                 )
-                search.fit(X_train, y_train)
+                search.fit(X_train, y_train, **fit_params)
             except Exception as exc:
                 import traceback; traceback.print_exc()
                 print(f"  FAILED: {exc} — skipping {name}.", flush=True)
                 continue
 
             best_classifier = model.set_params(**search.best_params_)
-            best_classifier.fit(X_train, y_train)
+            best_classifier.fit(X_train, y_train, **fit_params)
 
             y_pred = best_classifier.predict(X_test)
             acc    = accuracy_score(y_test, y_pred)
