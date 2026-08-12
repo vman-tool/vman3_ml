@@ -19,10 +19,42 @@ from .instrument_dictionary import (
 from .mapcauselist import map_causelist, map_ucod_text_to_who
 from .narrative import NARRATIVE_COLS, NarrativeEmbedder, HAS_SENTENCE_TRANSFORMERS
 
+# Causes that get a real hard-coded confirmation question in the instrument
+# (e.g. "was there a diagnosis by a health professional of X") - clinically
+# important enough that being folded into a WHO-major cluster label at the
+# default min_vc=130 loses information a coder could otherwise rely on
+# directly. Protected from clustering as long as they clear their own floor
+# (well above the hard CV-fold minimum of 7 enforced later in training.py,
+# but well below the global min_vc) - a cause with too few examples even for
+# this lower floor still gets clustered, since a handful of rows can't
+# support a stable decision boundary regardless of how clinically important
+# the cause is.
+#
+# Override per-run via DataPreprocessor(protected_causes={...}) or
+# train.py's --protect-causes; this is just the default set.
+DEFAULT_PROTECTED_CAUSES = {
+    'Sickle cell with crisis': 20,
+}
+
+# cause -> (confirmation question column(s), sample_weight multiplier).
+# id10142/id10127/id10128/id10129 are 2016WHOv151_to_InterVA5.csv's own
+# names for "diagnosis by a health professional of sickle cell / HIV /
+# malaria (test result)" - see compute_confirmation_sample_weights(). Malaria
+# and HIV/AIDS are already standalone (non-clustered) classes in the current
+# model, so this only changes how hard training penalises getting an
+# already-confirmed row wrong, not whether the class exists at all.
+DEFAULT_CONFIRMATION_MAP = {
+    'Sickle cell with crisis':  ('id10142', 3.0),
+    'Malaria':                  (('id10128', 'id10129'), 3.0),
+    'HIV/AIDS related death':   ('id10127', 3.0),
+}
+
+
 class DataPreprocessor:
-    def __init__(self, verbose=False, min_vc=130, na_threshold=0.7, use_quality_filter=True, taxonomy_path=None, instrument_version=None):
+    def __init__(self, verbose=False, min_vc=130, na_threshold=0.7, use_quality_filter=True, taxonomy_path=None, instrument_version=None, protected_causes=None):
         self.verbose = verbose
         self.min_vc = min_vc
+        self.protected_causes = dict(DEFAULT_PROTECTED_CAUSES if protected_causes is None else protected_causes)
         self.na_threshold = na_threshold
         self.use_quality_filter = use_quality_filter
         self.taxonomy_path = Path(taxonomy_path) if taxonomy_path else Path(__file__).resolve().parent / 'data' / 'cause_taxonomy.json'
@@ -869,7 +901,22 @@ class DataPreprocessor:
 
         working = df.copy()
         counts = working[target_col].value_counts(dropna=False)
-        rare_labels = [label for label in counts[counts < self.min_vc].index if pd.notna(label)]
+
+        def _is_protected(label) -> bool:
+            floor = self.protected_causes.get(str(label))
+            return floor is not None and counts.get(label, 0) >= floor
+
+        rare_labels = [
+            label for label in counts[counts < self.min_vc].index
+            if pd.notna(label) and not _is_protected(label)
+        ]
+        protected_kept = [
+            str(label) for label in counts.index
+            if pd.notna(label) and counts[label] < self.min_vc and _is_protected(label)
+        ]
+        if self.verbose and protected_kept:
+            print(f"Protected causes kept standalone despite being under min_vc={self.min_vc}: "
+                  f"{protected_kept}")
 
         if not rare_labels:
             return working, {}, {'clustered_label_count': 0, 'clustered_causes': [], 'rows_after_clustering': len(working)}
@@ -925,6 +972,45 @@ class DataPreprocessor:
             'clustered_causes': cluster_summary,
             'rows_after_clustering': len(working),
         }
+
+    def compute_confirmation_sample_weights(self, X, y, confirmation_map=None) -> np.ndarray:
+        """Per-row training weights: 1.0 by default, boosted for rows where a
+        direct professional-confirmation question (e.g. id10142, "was there a
+        diagnosis by a health professional of sickle cell disease?") matches
+        the row's own label.
+
+        This is the closest available lever to InterVA5's hand-set Bayesian
+        likelihood weights - XGBoost has no mechanism to hard-assign "this
+        feature matters a lot for this class" the way InterVA5's probbase
+        does, but sample_weight raises the loss penalty for misclassifying
+        these specific, well-evidenced rows, which pushes training in the
+        same direction.
+
+        X must still contain the raw confirmation columns - call this before
+        any column dropping that might remove them (i.e. before
+        _encode_features). y is the raw (un-encoded) label series/array,
+        same row order and length as X.
+        """
+        cmap = DEFAULT_CONFIRMATION_MAP if confirmation_map is None else confirmation_map
+        weights = np.ones(len(X), dtype=float)
+        y_arr = np.asarray(y)
+        for cause, (cols, multiplier) in cmap.items():
+            cols = (cols,) if isinstance(cols, str) else tuple(cols)
+            available = [c for c in cols if c in X.columns]
+            if not available:
+                continue
+            confirmed = np.zeros(len(X), dtype=bool)
+            for col in available:
+                confirmed |= X[col].astype(str).str.strip().str.lower().isin(
+                    ['1', 'yes', 'true']
+                ).to_numpy()
+            boost = confirmed & (y_arr == cause)
+            if boost.any():
+                weights[boost] = multiplier
+                if self.verbose:
+                    print(f"Sample weight: {int(boost.sum())} {cause!r} row(s) confirmed via "
+                          f"{available} - weighted x{multiplier}")
+        return weights
     
     
         # 'Malaria': ['id10077','id10126','id10127','id10128','id10130','id10131','id10133','id10134','id10135','id10136','id10137',
