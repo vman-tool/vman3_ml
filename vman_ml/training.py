@@ -3,7 +3,7 @@ from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 from sklearn.ensemble import RandomForestClassifier
 from collections import Counter
-from .processing import DataPreprocessor
+from .processing import DataPreprocessor, normalize_categorical_series
 
 import pandas as pd
 import numpy as np
@@ -404,7 +404,7 @@ class ModelTrainer:
         for col, enc in (self.encoders or {}).items():
             if col not in X.columns:
                 continue
-            col_data = X[col].astype(str).replace(['nan', '', ' '], 'dk')
+            col_data = normalize_categorical_series(X[col])
             if isinstance(enc, dict):
                 X[col] = col_data.map(enc).fillna(-1).astype(float)
             else:

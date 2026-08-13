@@ -19,6 +19,31 @@ from .instrument_dictionary import (
 from .mapcauselist import map_causelist, map_ucod_text_to_who
 from .narrative import NARRATIVE_COLS, NarrativeEmbedder, HAS_SENTENCE_TRANSFORMERS
 
+
+def normalize_categorical_series(series: pd.Series) -> pd.Series:
+    """Case-fold and standardise missing-value tokens for one categorical
+    column.
+
+    There are three independent places a categorical column gets encoded or
+    decoded against a fitted LabelEncoder: here at training-fit time
+    (DataPreprocessor._encode_features), at real inference time
+    (CCVAPredictor._apply_encoders in prediction.py), and when scoring the
+    external holdout split (ModelTrainer.transform_features in training.py).
+    All three need to treat e.g. 'High' and 'high' as the same category, or
+    a value's real casing - which can differ between source datasets/
+    instrument exports, and between training data and whatever a live
+    deployment happens to store - determines whether it's recognised at all.
+    These already drifted out of sync once (two of the three sites got a
+    case-fold added, the third didn't, and every holdout value whose casing
+    disagreed with the now-lowercase-only encoder vocabulary silently
+    became "unseen" and fell back to an arbitrary class - collapsing
+    holdout accuracy from ~80% to ~14% with no exception raised anywhere).
+    Centralising it here is specifically to stop that happening a second
+    time by making a fourth copy impossible rather than just unlikely.
+    """
+    return series.astype(str).str.strip().str.lower().replace(['nan', ''], 'dk')
+
+
 # Causes that get a real hard-coded confirmation question in the instrument
 # (e.g. "was there a diagnosis by a health professional of X") - clinically
 # important enough that being folded into a WHO-major cluster label at the
@@ -1093,9 +1118,8 @@ class DataPreprocessor:
                 if isinstance(col_data, pd.DataFrame):  # Handle case where column is 2D
                     col_data = col_data.iloc[:, 0]  # Take first column
                 
-                # Standardize missing values
-                col_data = col_data.astype(str).replace(['nan', '', ' '], 'dk')
-                
+                col_data = normalize_categorical_series(col_data)
+
                 # Get unique values safely
                 unique_vals = pd.Series(col_data).unique()
                 

@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 from .instrument_dictionary import detect_instrument_version
 from .narrative import NarrativeEmbedder, NARRATIVE_COLS
+from .processing import normalize_categorical_series
 
 try:
     import shap as _shap
@@ -82,6 +83,21 @@ class CCVAPredictor:
         label_classes = set(self.label_encoder.classes_)
         if self.original_classes != label_classes:
             print("WARNING: original_classes don't match label encoder classes")
+
+        # Catch a class this model has that *looks* age/sex-restricted (see
+        # _PLAUSIBILITY_KEYWORDS) but isn't in either guard list - printed at
+        # load time, every time, specifically so it can't ship unnoticed the
+        # way "Birth asphyxia" did on the first retrain that produced it as a
+        # standalone class instead of a WHO cluster.
+        guarded = self._MATERNAL_ONLY_CLASSES | self._NEONATE_ONLY_CLASSES
+        unguarded_suspects = sorted(
+            c for c in self.original_classes
+            if c not in guarded and any(k in c.lower() for k in self._PLAUSIBILITY_KEYWORDS)
+        )
+        if unguarded_suspects:
+            print(f"WARNING: class(es) {unguarded_suspects} look age/sex-restricted by name "
+                  f"but aren't in _MATERNAL_ONLY_CLASSES or _NEONATE_ONLY_CLASSES - "
+                  f"add them if they should be plausibility-constrained.")
 
         if self.verbose:
             versions_str = ', '.join(str(v) for v in self.training_instrument_versions if v)
@@ -160,9 +176,23 @@ class CCVAPredictor:
     # decedent, or for a child/neonate decedent. Mirrors vman_dq's ICI C5
     # biological-plausibility rule (pregnancy/maternal responses for a male
     # decedent), applied here to the model's output rather than input data.
+    #
+    # This list (and _NEONATE_ONLY_CLASSES below) is retrain-dependent: which
+    # causes end up as real standalone classes versus folded into a WHO
+    # cluster depends on min_vc and how many examples of each this specific
+    # training run had - a class named here is only useful if the *current*
+    # model actually has it (see _class_columns, which silently no-ops on a
+    # class this model doesn't have). A retrain that promotes a previously-
+    # clustered maternal/neonatal cause to standalone status needs an entry
+    # added here too, or that new class goes unguarded - see the
+    # keyword-based load-time check in __init__ below, which exists
+    # specifically to catch that before it ships silently again.
     _MATERNAL_ONLY_CLASSES = frozenset({
         'Pregnancy-related sepsis',
         'cluster_pregnancy_childbirth_and_puerperium_related_disorders',
+        'Obstetric haemorrhage',
+        'Other and unspecified maternal cause',
+        'Pregnancy-induced hypertension',
     })
 
     # Cause-of-death classes that, by WHO taxonomy definition, only apply to
@@ -170,12 +200,30 @@ class CCVAPredictor:
     # not merely rare in an older child or adult, but definitionally out of
     # scope for them. Same kind of near-tautological implausibility as
     # _MATERNAL_ONLY_CLASSES, just gated on the opposite direction (must be
-    # neonate, rather than must not be).
+    # neonate, rather than must not be). See the retrain-dependence note on
+    # _MATERNAL_ONLY_CLASSES above - it applies here too.
     _NEONATE_ONLY_CLASSES = frozenset({
         'Neonatal sepsis',
         'cluster_neonatal_causes_of_death',
         'cluster_stillbirths',
+        'Birth asphyxia',
     })
+
+    # WHO's standard definition of "women of reproductive age" is 15-49;
+    # only the upper bound matters here since is_child/isneonatal already
+    # rule out anyone too young. A maternal-cause prediction above this age
+    # is exactly as implausible as one for a male decedent - being female
+    # and nominally "adult" isn't on its own enough to make Pregnancy-related
+    # sepsis etc. a plausible cause of death.
+    _MATERNAL_MAX_AGE_YEARS = 49
+
+    # Keywords suggestive of an age/sex-restricted cause. Used only to WARN
+    # at load time when a model has a class matching one of these but absent
+    # from both guard lists above - not to auto-add it, since a keyword match
+    # isn't reliable enough to silently change what gets constrained. This is
+    # exactly the gap that let a retrain's new "Birth asphyxia" class predict
+    # for a 73-year-old unnoticed until it reached production.
+    _PLAUSIBILITY_KEYWORDS = ('neonat', 'stillbirth', 'birth asphyxia', 'pregnan', 'maternal', 'obstetric', 'puerperium')
 
     @classmethod
     def _is_informative(cls, val) -> bool:
@@ -318,7 +366,7 @@ class CCVAPredictor:
         for col, encoder in self.feature_encoders.items():
             if col not in X.columns:
                 continue
-            col_data = X[col].astype(str).replace({'nan': 'dk', '': 'dk', ' ': 'dk'})
+            col_data = normalize_categorical_series(X[col])
             if isinstance(encoder, dict):
                 X[col] = col_data.map(encoder).fillna(-1).astype(float)
             else:
@@ -432,8 +480,13 @@ class CCVAPredictor:
 
         Enforces two rules:
         - Maternal/pregnancy-related causes (_MATERNAL_ONLY_CLASSES) cannot be
-          the cause of death for a male decedent or for a child/neonate
-          decedent.
+          the cause of death for a male decedent, for a child/neonate
+          decedent, or for a decedent recorded as older than
+          _MATERNAL_MAX_AGE_YEARS - being an adult female isn't sufficient
+          on its own; WHO defines "women of reproductive age" as 15-49, and
+          a maternal-cause prediction for, say, a 73-year-old is exactly as
+          implausible as one for a male or a child, just gated on a
+          different field (ageinyears rather than sex/ischild/isneonatal).
         - Neonate/stillbirth-only causes (_NEONATE_ONLY_CLASSES) cannot be the
           cause of death for a decedent flagged as a child or an adult - they
           are only defined for a death in the first 28 days of life.
@@ -460,8 +513,14 @@ class CCVAPredictor:
         is_neonate = _flag('isneonatal')
         is_adult = _flag('isadult')
 
+        age_years = self._col(cleaned_df, 'ageinyears')
+        too_old_for_maternal = (
+            (pd.to_numeric(age_years, errors='coerce') > self._MATERNAL_MAX_AGE_YEARS).to_numpy()
+            if age_years is not None else np.zeros(len(cleaned_df), dtype=bool)
+        )
+
         rules = (
-            (self._MATERNAL_ONLY_CLASSES, is_male | is_child | is_neonate),
+            (self._MATERNAL_ONLY_CLASSES, is_male | is_child | is_neonate | too_old_for_maternal),
             (self._NEONATE_ONLY_CLASSES, is_child | is_adult),
         )
 
