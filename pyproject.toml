@@ -18,7 +18,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "vman_dq @ git+https://github.com/vman-tool/vman3_dq.git@v1.2.1",
+    "vman_dq @ git+https://github.com/vman-tool/vman3_dq.git@v1.2.2",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "scikit-learn>=1.6.0,<2.0.0",
