@@ -172,6 +172,13 @@ Timing is also recorded: per-model fit time in `cv_results.json`/`holdout_test_r
 
 After training, two global SHAP figures are saved to the report directory and embedded in `training_summary.md`: `shap_feature_importance.png` (top 20 features by mean |SHAP value|, computed with `shap.TreeExplainer` on a sample of up to 500 hold-out records) and `shap_narrative_contribution.png` (the narrative-embedding block's combined contribution vs. everything else — see `vman_ml/shap_report.py`). This needs `matplotlib`, now a regular dependency; it's a reporting extra and never fails the training run itself if `shap`/`matplotlib` are unavailable.
 
+Global feature importance averages over every record, which hides real differences — verbal autopsy predictors genuinely vary by who died of what (a neonate's prediction leans on prematurity/birth-complication fields, an adult's on chronic-disease history, an injury death on external-cause narrative). So three more figures are generated per sub-group, stratified by:
+- **age group** — Adult / Child / Neonate (from the `isadult`/`ischild`/`isneonatal` feature flags)
+- **sex** — Male / Female (from `id10019`)
+- **cause group** — each WHO major cause category present with enough support (`pcva_who_major`, e.g. "Infectious and parasitic diseases," "External causes of death," "Neonatal causes of death" — only available on multi-dataset/combined runs, since only `combine_datasets()` computes it before the hold-out split)
+
+This deliberately stops at these groupings rather than going per individual cause class (31+ classes, many with single-digit hold-out support — too sparse for a stable SHAP estimate, same concern as the per-class AUROC exclusion above). Any group with fewer than 20 hold-out records is skipped outright rather than plotted misleadingly. These are saved as `shap_<axis>_<group>.png` and embedded in `training_summary.md` under a collapsible "Stratified SHAP Feature Importance" section, one `<details>` block per axis (collapsed by default — a full run can produce a dozen cause-group panels).
+
 ---
 
 ## Standalone Prediction

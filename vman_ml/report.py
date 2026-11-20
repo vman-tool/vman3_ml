@@ -179,6 +179,26 @@ def generate_markdown_summary(report_dir, output_name='training_summary.md'):
         for title, name in present:
             lines += [f'**{title}**', '', f'![{title}]({name})', '']
 
+    stratified = (audit or {}).get('stratified_shap_figures')
+    if stratified:
+        lines += [
+            '## Stratified SHAP Feature Importance', '',
+            'Feature importance split by sub-group — verbal autopsy predictors '
+            'genuinely differ by who died of what (e.g. neonates vs. adults, '
+            'or infectious vs. external-cause deaths). Collapsed by default; '
+            'expand an axis to see its per-group panels.', '',
+        ]
+        for axis, groups in stratified.items():
+            axis_title = axis.replace('_', ' ').title()
+            present_groups = [(label, name) for label, name in groups.items()
+                               if (report_dir / name).exists()]
+            if not present_groups:
+                continue
+            lines += [f'<details><summary>{axis_title}</summary>', '']
+            for label, name in present_groups:
+                lines += [f'**{label}**', '', f'![{label} — {axis_title}]({name})', '']
+            lines += ['</details>', '']
+
     output_path = report_dir / output_name
     output_path.write_text('\n'.join(lines), encoding='utf-8')
     return output_path

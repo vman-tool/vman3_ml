@@ -13,7 +13,7 @@ from vman_ml.training import ModelTrainer
 from vman_ml.mapcauselist import export_mapping_excel
 from vman_ml.label_audit import LabelAuditor, build_feature_labels
 from vman_ml.report import generate_markdown_summary
-from vman_ml.shap_report import generate_shap_figures
+from vman_ml.shap_report import generate_shap_figures, generate_stratified_shap_figures
 import argparse
 import pandas as pd
 import numpy as np
@@ -284,6 +284,63 @@ Examples:
     )
     if shap_paths:
         print(f"SHAP figures saved: {', '.join(str(p) for p in shap_paths.values())}")
+
+    # ------------------------------------------------------------------ #
+    # Stratified SHAP — age group / sex / cause group. Verbal autopsy     #
+    # feature importance genuinely differs across these (neonates lean on #
+    # prematurity/birth-complication fields, adults on chronic-disease    #
+    # history, injury deaths on external-cause narrative) - see           #
+    # shap_report.generate_stratified_shap_figures' docstring for why     #
+    # this stops at these groupings rather than going per individual      #
+    # cause class. meta columns come from _source_df (the pre-quality-    #
+    # filter frame — only the multi-dataset path carries pcva_who_major,  #
+    # since only combine_datasets() runs WHO-cause mapping before it's    #
+    # captured; single-dataset runs just skip that one axis).             #
+    # ------------------------------------------------------------------ #
+    meta   = _source_df.reindex(X_holdout_raw.index)
+    strata = {}
+
+    if {'isadult', 'ischild', 'isneonatal'}.issubset(meta.columns):
+        strata['age_group'] = {
+            'Adult':   (meta['isadult'] == 1).to_numpy(),
+            'Child':   (meta['ischild'] == 1).to_numpy(),
+            'Neonate': (meta['isneonatal'] == 1).to_numpy(),
+        }
+
+    if 'id10019' in meta.columns:
+        sex_norm = meta['id10019'].astype(str).str.strip().str.lower()
+        strata['sex'] = {
+            'Male':   (sex_norm == 'male').to_numpy(),
+            'Female': (sex_norm == 'female').to_numpy(),
+        }
+
+    if 'pcva_who_major' in meta.columns:
+        strata['cause_group'] = {
+            group: (meta['pcva_who_major'] == group).to_numpy()
+            for group in meta['pcva_who_major'].dropna().unique() if group
+        }
+
+    stratified_paths = generate_stratified_shap_figures(
+        trainer.best_model,
+        X_holdout_scaled,
+        feature_names=trainer._encoded_feature_columns,
+        strata=strata,
+        output_dir=audit_report_path.parent,
+    )
+    if stratified_paths:
+        print(f"Stratified SHAP figures saved: {len(stratified_paths)} "
+              f"(axes: {', '.join(sorted(strata.keys()))})")
+
+        # Record {axis: {group_label: filename}} so report.py can embed these
+        # with their real labels - matching back from the slugified filenames
+        # alone would be lossy (e.g. which capitalisation/punctuation a label
+        # had originally).
+        stratified_figures_map = {}
+        for (axis, label), path in stratified_paths.items():
+            stratified_figures_map.setdefault(axis, {})[label] = path.name
+        audit_report['stratified_shap_figures'] = stratified_figures_map
+        with open(audit_report_path, 'w', encoding='utf-8') as handle:
+            json.dump(audit_report, handle, indent=2, ensure_ascii=False)
 
     print('Training completed.')
 
