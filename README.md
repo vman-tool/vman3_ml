@@ -32,14 +32,15 @@ Earlier versions:
 
 ## Training Data & Quality Filters
 
-Training data currently comes from four files (`vman_ml/data/`, gitignored — not distributed with the package):
+Training data currently comes from three files in `vman_ml/resources/` (gitignored — not distributed with the package, despite otherwise living alongside the packaged lookup files in that folder). Each filename is `train<version><country>.csv`: the numeric prefix is the WHO VA instrument version (`16` = 2016, `22` = 2022) and the suffix is the ISO-ish country code (`tz` = Tanzania, `es` = Eswatini, `ng` = Nigeria).
 
 | File | Rows | Instrument | Cause coding |
 |---|---|---|---|
-| `train_2016_tz.csv` | 3,601 | 2016 (ICD-10) | ICD-10 code (`pcva_ucod_icd`) |
-| `train_2022_es.csv` | 380 | 2022 (ICD-11) | Free text (`pcva_ucod`) |
-| `train_2022_ng-1.csv` | 5,474 | 2022 (ICD-11) | ICD-11 code (`pcva_icd10`, aliased to `pcva_ucod_icd`) |
-| `train_2022_ng-2.csv` | 2,589 | 2022 (ICD-11) | Free text (`pcva_ucod`) |
+| `train16_tz.csv` | 3,601 | 2016 (ICD-10) | ICD-10 code (`pcva_ucod_icd`) |
+| `train22_es.csv` | 380 | 2022 (ICD-11) | Free text (`pcva_ucod`) |
+| `train22_ng.csv` | 5,474 | 2022 (ICD-11) | ICD-11 code (`pcva_icd10`, aliased to `pcva_ucod_icd`) |
+
+(Row counts above are a current snapshot — these files are working data, not version-pinned, so they can drift. `train22_ng.csv` is the renamed former `train_2022_ng-1.csv`; the separate free-text-coded `train_2022_ng-2.csv` from the v1.2.0 run below is not part of the current fileset. The quality-filter counts below are frozen to that specific v1.2.0 run.)
 
 Before a record is used for training, `DataPreprocessor._prepare_training_data()` runs it through several checks (all counts below are from the actual v1.2.0 run, see `reports/v1.2.0/training_audit_report.json`):
 
@@ -68,18 +69,27 @@ vman_ml/              ← repo root
     instrument_dictionary.py  ← detects WHO instrument version (2016/2022)
     mapcauselist.py   ← ICD/text → WHO cause label mapping
     label_audit.py    ← cause label QC
-    narrative.py      ← narrative-text embeddings (id10476/id10477/id10479/id10436)
+    narrative.py      ← narrative-text embeddings (id10476/id10477/id10479/id10436) -
+                         narrative-less records get an all-zero vector + a 0/1
+                         presence flag, not the model's own encoding of "" (see
+                         module docstring: keeps narrative a pure supplement -
+                         harmless when absent, informative when present)
+    shap_report.py    ← global SHAP figures saved after training (see Training below)
     training.py       ← training utilities
-    resources/        ← lookup files (packaged with pip install; never gitignored)
+    resources/        ← lookup files (packaged with pip install) PLUS the
+                         gitignored training CSVs (not packaged) — see
+                         "Training Data & Quality Filters" above
       va_instr_2016.xlsx
       va_instr_2022.xlsx
       who_target_list.py   ← WHO PCVA causelist (Python module, not JSON/CSV —
                               see comment in the file for why)
       dictionaries/         ← cached per-version instrument dictionaries
-    data/             ← training CSVs (gitignored, not packaged — see
-                         "Training Data & Quality Filters" above)
+      train16_tz.csv        ← training data, gitignored (2016 instrument, Tanzania)
+      train22_es.csv        ← training data, gitignored (2022 instrument, Eswatini)
+      train22_ng.csv        ← training data, gitignored (2022 instrument, Nigeria)
   models/             ← trained model artifacts (repo root, not packaged)
-    ccva_model_combined.pkl   ← combined 2016+2022 model
+    vman_ccva.pkl             ← combined 2016+2022 model (standard name - this
+                                 is the one deployed into VMan3, see below)
     ccva_model_2016.pkl       ← 2016-instrument-only model
     ccva_model_2022.pkl       ← 2022-instrument-only model
   reports/
@@ -89,6 +99,8 @@ vman_ml/              ← repo root
       training_audit_report.json
       cv_results.json
       who_mapping.xlsx
+      training_summary.md      ← human-readable Markdown digest of the three
+                                  JSON files above (tables, not raw JSON)
 ```
 
 ---
@@ -97,8 +109,8 @@ vman_ml/              ← repo root
 
 ```bash
 python3 train.py \
-    --input vman_ml/data/train_2016_tz.csv vman_ml/data/train_2022_es.csv \
-            vman_ml/data/train_2022_ng-1.csv vman_ml/data/train_2022_ng-2.csv \
+    --input vman_ml/resources/train16_tz.csv vman_ml/resources/train22_es.csv \
+            vman_ml/resources/train22_ng.csv \
     --report-version v1.2.0 \
     --export-mapping reports/v1.2.0/who_mapping.xlsx \
     --verbose
@@ -106,11 +118,23 @@ python3 train.py \
 
 This saves all report outputs (`cv_results.json`, `training_audit_report.json`, `holdout_test_results.json`, and — with `--export-mapping` — a `who_mapping.xlsx` audit workbook) to `reports/v1.2.0/`. Omit `--report-version` and they go to `reports/` as before.
 
+A `training_summary.md` is also written alongside them — a single Markdown file with the same information as those three JSON files, as tables: the data-pipeline/drop-reason counts, the model comparison (CV/validation scores per candidate model), validation and hold-out metrics, and a per-cause precision/recall/F1/AUROC table on the hold-out set (worst 15 shown, rest collapsed). Easier to read than the raw JSON when you just want to check how a run went.
+
+Validation and hold-out metrics also include a macro-AUROC headline number (`auroc_macro` in `cv_results.json`/`holdout_test_results.json`) and a per-cause AUROC column (`auroc_per_class`), both one-vs-rest. Per-class AUROC is computed per class independently (not via a single `multi_class='ovr'` call) so one cause with too few hold-out records to define an ROC curve (no positive, or no negative, examples in that split - genuinely possible given some clusters have single-digit support) is just excluded from that cause's row (shown as `n/a` in the table) rather than failing the whole metric.
+
+### Generating a report without retraining
+
+`training_summary.md` can be (re)generated on its own from an existing report directory, without re-running `train.py`:
+```bash
+python3 -m vman_ml.report reports/v1.2.0
+```
+This is useful after manually editing a JSON report, or if `training_summary.md` predates a change to how it's rendered. `reports/v1.2.0` can be any directory containing `training_audit_report.json`, `cv_results.json`, and/or `holdout_test_results.json` — missing files are skipped rather than erroring.
+
 Additional options:
 ```bash
 python3 train.py \
-    --input vman_ml/data/train_2016_tz.csv vman_ml/data/train_2022_es.csv \
-            vman_ml/data/train_2022_ng-1.csv vman_ml/data/train_2022_ng-2.csv \
+    --input vman_ml/resources/train16_tz.csv vman_ml/resources/train22_es.csv \
+            vman_ml/resources/train22_ng.csv \
     --report-version v1.2.0 \
     --verbose \
     --min_vc 50
@@ -118,12 +142,42 @@ python3 train.py \
 
 The target column can be `pcva_ucod` (raw text) or `pcva_who_cod` (default — WHO standardised cause; requires an ICD or free-text cause column so `map_causelist`/`map_ucod_text_to_who` can populate it). After training, the model is saved to `models/`.
 
+### Short flags
+
+Every frequently-used option also has a short form (both work identically):
+
+| Short | Long |
+|---|---|
+| `-i` | `--input` |
+| `-v` | `--verbose` |
+| `-e` | `--export-mapping` |
+| `-r` | `--report-version` |
+| `-a` | `--audit_report` |
+| `-t` | `--target` |
+| `-V` | `--version` |
+| `-l` | `--label-audit` |
+
+The example above, written with short flags:
+```bash
+python3 train.py -i vman_ml/resources/train16_tz.csv vman_ml/resources/train22_es.csv \
+                     vman_ml/resources/train22_ng.csv \
+    -r v1.2.0 -e reports/v1.2.0/who_mapping.xlsx -v
+```
+
+The remaining options (`--min_vc`, `--na_threshold`, `--taxonomy_file`, `--llm-review`, `--audit-top-n`, `--audit-cv-folds`, `--no-confirmation-weights`) are long-form only — see `train.py --help` for the full list.
+
+Each model searches hyperparameters with `HalvingRandomSearchCV` (5-fold CV, 10 initial candidates by default, successive-halving — see [scikit-learn's docs](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.HalvingRandomSearchCV.html)): weaker candidates are eliminated early on a small sample of the training data, and only survivors are refit on progressively larger samples, which is substantially cheaper than giving every candidate a full 5-fold fit on the whole set (the previous `RandomizedSearchCV` behavior). Training prints a live progress line per model — fit count and elapsed time, so a multi-minute search doesn't look hung — without a percentage, since successive halving's real fit count isn't known upfront (it depends on how many candidates survive each round).
+
+Timing is also recorded: per-model fit time in `cv_results.json`/`holdout_test_results.json` (`comparison.<model>.fit_seconds`), and in `training_audit_report.json`, `training_seconds` (hyperparameter search only) and `total_run_seconds` (the whole run — data loading, preprocessing, narrative embeddings, search, evaluation). `training_summary.md` renders both under a "Timing" section.
+
+After training, two global SHAP figures are saved to the report directory and embedded in `training_summary.md`: `shap_feature_importance.png` (top 20 features by mean |SHAP value|, computed with `shap.TreeExplainer` on a sample of up to 500 hold-out records) and `shap_narrative_contribution.png` (the narrative-embedding block's combined contribution vs. everything else — see `vman_ml/shap_report.py`). This needs `matplotlib`, now a regular dependency; it's a reporting extra and never fails the training run itself if `shap`/`matplotlib` are unavailable.
+
 ---
 
 ## Standalone Prediction
 
 ```bash
-python3 predict.py --model models/ccva_model_combined.pkl --input va_test.csv --output results.csv --verbose
+python3 predict.py --model models/vman_ccva.pkl --input va_test.csv --output results.csv --verbose
 ```
 
 Relax the Don't-Know (DK) threshold:
@@ -146,11 +200,11 @@ The Python package (code + data files) is installed in the VMan3 backend via pip
 git+https://github.com/vman-tool/vman3_ml.git@v1.0.0
 ```
 
-The **model file (`.pkl`) is NOT distributed through pip** — it is maintained separately in the VMan3 backend under `backend/app/ccva/ml_models/ccva_model_combined.pkl`. This allows the model to be updated independently of the code without rebuilding the Docker image.
+The **model file (`.pkl`) is NOT distributed through pip** — it is maintained separately in the VMan3 backend under `backend/app/ccva/ml_models/ccva_model_combined.pkl`. This allows the model to be updated independently of the code without rebuilding the Docker image. (That backend-side filename is the backend's own internal convention, unrelated to this repo's output name below — the admin panel upload endpoint saves whatever `.pkl` you upload to that fixed internal path regardless of what it was named when you uploaded it, so renaming this repo's output requires no backend change.)
 
 ### Model update workflow
 
-1. Retrain: `python3 train.py ...` → new `models/ccva_model_combined.pkl`
+1. Retrain: `python3 train.py ...` → new `models/vman_ccva.pkl`
 2. Upload the new `.pkl` via the VMan3 admin panel (Settings → Configurations → VMan ML)
 3. The admin panel archives the old model and updates `model_registry.json` automatically
 
@@ -162,8 +216,72 @@ The **model file (`.pkl`) is NOT distributed through pip** — it is maintained 
 
 ---
 
+## Fine-Tuning Considerations (LoRA / QLoRA)
+
+LoRA/QLoRA adapt a pretrained *neural network's* weight matrices cheaply (low-rank
+adapters, optionally over a 4-bit-quantized base) instead of updating all its
+weights. They don't apply uniformly across this pipeline — the two trained
+components are architecturally different:
+
+- **XGBoost / RandomForest (the actual cause-of-death classifier)** — trees,
+  no weight matrices, nothing for LoRA to attach to. The nearest equivalent
+  goal (cheap adaptation to new data without refitting from scratch) is
+  XGBoost's own warm-start (`xgb_model=`, continuing to boost an existing
+  model on new rows) — same goal, unrelated mechanism. Relevant once a 4th
+  country's data arrives and a full `RandomizedSearchCV` refit feels wasteful.
+- **The narrative embedder** (`paraphrase-multilingual-MiniLM-L12-v2` in
+  `vman_ml/narrative.py`) — this *is* a transformer, currently used entirely
+  frozen as a generic multilingual sentence encoder. This is the one place
+  LoRA is actually relevant: the model has no notion of "cause of death", it
+  just measures generic paraphrase similarity. Fine-tuning it on this
+  project's own (narrative text, WHO cause label) pairs — already available
+  in the training data — could produce embeddings that cluster by clinical
+  similarity instead of surface wording.
+
+  LoRA is arguably a *better* fit here than full fine-tuning precisely
+  because the labeled-narrative set is small relative to the model's original
+  pretraining corpus (measured: only ~7,100 unique non-empty narratives
+  across the full TZ+ES+NG set) — full fine-tuning on that little data risks
+  catastrophic forgetting of the base model's general multilingual knowledge,
+  while LoRA's constrained low-rank updates are specifically suited to narrow
+  domain adaptation without damaging it. QLoRA's quantization benefit doesn't
+  matter here — MiniLM-L12 is only ~118M params, already cheap to run at full
+  precision on CPU.
+
+  Not yet implemented — would need a training objective (classification or
+  contrastive loss on cause labels), a split for the embedder's own
+  training/validation that doesn't leak into the downstream XGBoost
+  evaluation, and a controlled comparison against the frozen-embedding
+  baseline (e.g. via `shap_narrative_contribution.png`, see Training below)
+  to confirm it actually improves downstream macro-F1 before adopting it.
+
+---
+
 ## Installation (development)
 
+This repo has its own virtual environment, separate from the VMan3 backend's.
+Always activate `vman_ml/.venv` (not the backend's) before running `train.py`
+or `predict.py` — check with `which python3` if unsure.
+
 ```bash
-pip install -e /path/to/vman3_ml
+cd /path/to/vman3_ml
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt   # pinned third-party deps
+pip install -e .                  # installs this package itself, editable
 ```
+
+`requirements.txt` pins the exact versions known to work (including
+`vman_dq`, pulled from its git tag). Reinstalling from it should reproduce
+the environment exactly, without re-resolving newer releases.
+
+If you add or upgrade a dependency, update `pyproject.toml`'s `dependencies`
+list first, then regenerate the pin file from the active venv:
+
+```bash
+pip freeze | grep -v '^-e ' > requirements.txt
+```
+
+(the `-e git+...#egg=vman_ml` self-reference that `pip freeze` adds for the
+editable install should be dropped — the package is installed separately via
+`pip install -e .` above, not from `requirements.txt`).

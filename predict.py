@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # vman3_ml/predict.py
 import os
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
@@ -45,7 +46,7 @@ def main():
     model_path = Path(args.model)
     if model_path.is_dir():
         # Directory: prefer combined model, fall back to version-specific, then generic
-        combined_path  = model_path / "ccva_model_combined.pkl"
+        combined_path  = model_path / "vman_ccva.pkl"
         versioned_path = model_path / f"ccva_model_{detection['version']}.pkl"
         generic_path   = model_path / "ccva_model.pkl"
         if combined_path.exists():

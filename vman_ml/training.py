@@ -1,6 +1,7 @@
 # vman3_ml/vman3_ml/training.py
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.metrics import accuracy_score, f1_score, classification_report
+from sklearn.experimental import enable_halving_search_cv  # noqa: F401 - required to unlock HalvingRandomSearchCV
+from sklearn.model_selection import train_test_split, HalvingRandomSearchCV
+from sklearn.metrics import accuracy_score, f1_score, classification_report, get_scorer, roc_auc_score
 from sklearn.ensemble import RandomForestClassifier
 from collections import Counter
 from .processing import DataPreprocessor, normalize_categorical_series
@@ -10,6 +11,9 @@ import numpy as np
 import joblib
 import os
 import json
+import sys
+import time
+import threading
 
 try:
     from xgboost import XGBClassifier
@@ -42,6 +46,103 @@ _SEARCH_N_JOBS = {
     'RandomForest': 1,
     'XGBoost': 1,
 }
+
+_SCORING = 'f1_macro'
+
+
+class _FitProgress:
+    """Live progress feedback for a hyperparameter search.
+
+    sklearn gives no per-fit callback, so progress is tracked by wrapping the
+    scorer (called exactly once per completed fit) in a counter, then
+    rendering it from a background thread. This only works because
+    _SEARCH_N_JOBS forces every search to run with n_jobs=1 - the scorer then
+    always runs in this same process/thread, so the counter needs no
+    cross-process synchronisation.
+
+    total=None (or 0) means "unknown" - used for HalvingRandomSearchCV, whose
+    real fit count depends on its internal rung schedule (number of
+    candidates eliminated at each successive-halving round), which isn't a
+    simple candidates*folds product and isn't worth re-deriving/risking
+    drifting out of sync with sklearn's own implementation. Progress then
+    renders as an open-ended fit counter + elapsed time instead of a
+    percentage.
+    """
+    _SPINNER = '|/-\\'
+    _INTERVAL = 0.3
+
+    def __init__(self, label, total=None):
+        self.label = label
+        self.total = total
+        self.count = 0
+        self._start = time.time()
+        self._stop = threading.Event()
+        self._thread = None
+        self._is_tty = sys.stdout.isatty()
+
+    def wrap_scorer(self, real_scorer):
+        # sample_weight=None kwarg matters, not just style: HalvingRandomSearchCV
+        # inspects the scoring callable's signature and, when fit_params carries
+        # sample_weight, forwards it to scoring too so validation-fold F1 is
+        # itself weighted - sklearn's real scorers (get_scorer(...)) already
+        # accept this kwarg natively. Without it here, sklearn warns and scores
+        # unweighted, silently diverging from what sample_weight is supposed to
+        # mean throughout the rest of this pipeline (see train.py's
+        # compute_confirmation_sample_weights).
+        def scorer(estimator, X, y, sample_weight=None):
+            score = real_scorer(estimator, X, y, sample_weight=sample_weight)
+            self.count += 1
+            return score
+        return scorer
+
+    def _line(self, spin_char):
+        elapsed = time.time() - self._start
+        mins, secs = divmod(int(elapsed), 60)
+        if self.total:
+            pct = 100 * self.count / self.total
+            fits = f"{self.count}/{self.total} fits ({pct:3.0f}%)"
+        else:
+            fits = f"{self.count} fits"
+        return f"  {spin_char} {self.label}: {fits}  elapsed {mins}m{secs:02d}s"
+
+    _LOG_EVERY = 15.0  # seconds, non-tty fallback when total is unknown
+
+    def _run(self):
+        i = 0
+        last_logged_pct = -1
+        last_logged_at  = 0.0
+        while not self._stop.is_set():
+            if self._is_tty:
+                sys.stdout.write('\r' + self._line(self._SPINNER[i % len(self._SPINNER)]).ljust(70))
+                sys.stdout.flush()
+            elif self.total:
+                pct = int(100 * self.count / self.total)
+                if pct != last_logged_pct and pct % 10 == 0:
+                    print(self._line('.'), flush=True)
+                    last_logged_pct = pct
+            else:
+                now = time.time()
+                if now - last_logged_at >= self._LOG_EVERY:
+                    print(self._line('.'), flush=True)
+                    last_logged_at = now
+            i += 1
+            self._stop.wait(self._INTERVAL)
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._stop.set()
+        self._thread.join()
+        status = 'failed' if exc_type else 'done'
+        line = self._line('*') + f'  {status}.'
+        if self._is_tty:
+            sys.stdout.write('\r' + line.ljust(70) + '\n')
+        else:
+            print(line, flush=True)
+        return False
 
 
 class ModelTrainer:
@@ -83,6 +184,7 @@ class ModelTrainer:
         self._y_test                  = None
         self._encoded_feature_columns = None
         self.comparison_report_: dict = {}
+        self.training_seconds_: float | None = None
 
     # ---------------------------------------------------------------------- #
     #  Training                                                                #
@@ -198,35 +300,46 @@ class ModelTrainer:
             for i in range(len(self.label_encoder.classes_))
         }
 
-        import sys
         print(f"Train: {X_train.shape}  Val: {X_test.shape}", flush=True)
         print(f"Class distribution (train): {Counter(y_train)}\n", flush=True)
 
         best_score = -1.0
+        train_start = time.time()
 
         for name, model in self.models.items():
             print(f"─── {name} ───────────────────────────────────────", flush=True)
             sys.stdout.flush()
+            model_start = time.time()
             param_grid = _PARAM_GRIDS.get(name, {})
 
             search_n_jobs = _SEARCH_N_JOBS.get(name, -1)
             # sample_weight is a fit param on the underlying estimator (both
             # XGBClassifier and RandomForestClassifier accept it), forwarded
-            # through RandomizedSearchCV's **fit_params - it does not affect
+            # through HalvingRandomSearchCV's **fit_params - it does not affect
             # which CV folds are drawn, only the loss each fold optimises.
             fit_params = {'sample_weight': self._w_train} if self._w_train is not None else {}
+
+            grid_size    = 1
+            for _values in param_grid.values():
+                grid_size *= len(_values)
+            n_candidates = min(n_iter_search, grid_size) if grid_size else n_iter_search
+            # total=None: HalvingRandomSearchCV eliminates candidates round by
+            # round (successive halving), so the real fit count isn't a simple
+            # candidates*folds product - see _FitProgress docstring.
+            progress = _FitProgress(label=name)
+
             try:
-                search = RandomizedSearchCV(
-                    model,
-                    param_distributions=param_grid,
-                    n_iter=n_iter_search,
-                    cv=_cv_folds,
-                    scoring='f1_macro',
-                    random_state=42,
-                    n_jobs=search_n_jobs,
-                    verbose=int(self.verbose),
-                )
-                search.fit(X_train, y_train, **fit_params)
+                with progress:
+                    search = HalvingRandomSearchCV(
+                        model,
+                        param_distributions=param_grid,
+                        n_candidates=n_candidates,
+                        cv=_cv_folds,
+                        scoring=progress.wrap_scorer(get_scorer(_SCORING)),
+                        random_state=42,
+                        n_jobs=search_n_jobs,
+                    )
+                    search.fit(X_train, y_train, **fit_params)
             except Exception as exc:
                 import traceback; traceback.print_exc()
                 print(f"  FAILED: {exc} — skipping {name}.", flush=True)
@@ -243,11 +356,15 @@ class ModelTrainer:
             print(f"  Test accuracy: {acc:.4f}   Test macro-F1: {f1:.4f}", flush=True)
             print(f"  Best params : {search.best_params_}", flush=True)
 
+            fit_seconds = time.time() - model_start
+            print(f"  Fit time    : {fit_seconds:.1f}s", flush=True)
+
             self.comparison_report_[name] = {
                 'cv_f1_macro':    round(float(search.best_score_), 4),
                 'test_accuracy':  round(float(acc), 4),
                 'test_f1_macro':  round(float(f1), 4),
                 'best_params':    search.best_params_,
+                'fit_seconds':    round(fit_seconds, 1),
             }
 
             if f1 > best_score:
@@ -297,6 +414,8 @@ class ModelTrainer:
                 else:
                     self.ood_threshold = None
 
+        self.training_seconds_ = round(time.time() - train_start, 1)
+
         # Print comparison table
         self._print_comparison()
         return self.best_model
@@ -305,19 +424,24 @@ class ModelTrainer:
         if not self.comparison_report_:
             return
         lines = [
-            f"\n{'═'*58}",
+            f"\n{'═'*70}",
             f"  MODEL COMPARISON",
-            f"{'═'*58}",
-            f"  {'Model':<16} {'CV F1':>8}  {'Test Acc':>9}  {'Test F1':>8}",
-            f"  {'─'*14}  {'─'*8}  {'─'*9}  {'─'*8}",
+            f"{'═'*70}",
+            f"  {'Model':<16} {'CV F1':>8}  {'Test Acc':>9}  {'Test F1':>8}  {'Fit Time':>9}",
+            f"  {'─'*14}  {'─'*8}  {'─'*9}  {'─'*8}  {'─'*9}",
         ]
         for name, m in self.comparison_report_.items():
             marker = ' ◀ best' if name == self.best_model_name_ else ''
+            fit_s  = m.get('fit_seconds')
+            fit_str = f"{fit_s:>8.1f}s" if fit_s is not None else f"{'n/a':>9}"
             lines.append(
                 f"  {name:<16} {m['cv_f1_macro']:>8.4f}  "
-                f"{m['test_accuracy']:>9.4f}  {m['test_f1_macro']:>8.4f}{marker}"
+                f"{m['test_accuracy']:>9.4f}  {m['test_f1_macro']:>8.4f}  {fit_str}{marker}"
             )
-        lines.append(f"{'═'*58}\n")
+        if self.training_seconds_ is not None:
+            mins, secs = divmod(int(self.training_seconds_), 60)
+            lines.append(f"  Total hyperparameter-search time: {mins}m{secs:02d}s")
+        lines.append(f"{'═'*70}\n")
         print('\n'.join(lines), flush=True)
 
     # ---------------------------------------------------------------------- #
@@ -333,7 +457,15 @@ class ModelTrainer:
             version = 'combined'
         else:
             version = version or getattr(preprocessor, 'instrument_version', None)
-        model_filename = f"ccva_model_{version}.pkl" if version else "ccva_model.pkl"
+        # vman_ccva.pkl is the standard name for the combined (multi-instrument)
+        # model - the one artifact actually deployed into VMan3 (see "Deployment
+        # in VMan3" below). Version-specific models keep the older ccva_model_*
+        # naming; only the combined one was asked to adopt the new convention.
+        model_filename = (
+            'vman_ccva.pkl' if version == 'combined'
+            else f"ccva_model_{version}.pkl" if version
+            else "ccva_model.pkl"
+        )
 
         artifacts = {
             'model':                   self.best_model,
@@ -418,6 +550,38 @@ class ModelTrainer:
 
         return self.scaler.transform(X_num.values.astype(float))
 
+    def _auroc(self, X_test, y_test):
+        """One-vs-rest AUROC, per class + macro (unweighted mean of per-class).
+
+        Computed per class with its own try/except rather than one call to
+        roc_auc_score(..., average='macro') because several causes have very
+        low support (some holdout classes have single-digit records - see
+        README's "Training Data & Quality Filters") and can end up with zero
+        positive (or zero negative) examples in a given eval split, which
+        roc_auc_score treats as a hard error ("Only one class present").
+        That would otherwise kill the whole metric instead of just excluding
+        the one undecidable class. Returns (macro_auroc_or_None, {class: auc}).
+        """
+        if not hasattr(self.best_model, 'predict_proba'):
+            return None, {}
+        try:
+            y_proba = self.best_model.predict_proba(X_test)
+        except Exception:
+            return None, {}
+
+        per_class = {}
+        for i, cls in enumerate(self.label_encoder.classes_):
+            y_true_binary = (np.asarray(y_test) == i).astype(int)
+            if y_true_binary.sum() == 0 or y_true_binary.sum() == len(y_true_binary):
+                continue  # class absent (or universal) in this split - AUROC undefined
+            try:
+                per_class[cls] = round(float(roc_auc_score(y_true_binary, y_proba[:, i])), 4)
+            except ValueError:
+                continue
+
+        macro = round(float(np.mean(list(per_class.values()))), 4) if per_class else None
+        return macro, per_class
+
     def evaluate(self, X_test, y_test, save_path=None, label='Val'):
         """Evaluate the best model on a test/holdout set."""
         if self.best_model is None:
@@ -429,11 +593,14 @@ class ModelTrainer:
         f1_weighted   = f1_score(y_test, y_pred, average='weighted', zero_division=0)
         y_pred_labels = self.label_encoder.inverse_transform(y_pred)
         y_test_labels = self.label_encoder.inverse_transform(y_test)
+        auroc_macro, auroc_per_class = self._auroc(X_test, y_test)
 
         print(
             f"{label} ({len(y_test):,} records) — "
             f"Accuracy: {acc:.4f}  Macro-F1: {f1_macro:.4f}  "
-            f"Weighted-F1: {f1_weighted:.4f}  [{self.best_model_name_}]"
+            f"Weighted-F1: {f1_weighted:.4f}"
+            + (f"  Macro-AUROC: {auroc_macro:.4f}" if auroc_macro is not None else "")
+            + f"  [{self.best_model_name_}]"
         )
         print(classification_report(y_test_labels, y_pred_labels, zero_division=0))
 
@@ -446,10 +613,12 @@ class ModelTrainer:
                 'accuracy':        round(float(acc), 4),
                 'f1_macro':        round(float(f1_macro), 4),
                 'f1_weighted':     round(float(f1_weighted), 4),
+                'auroc_macro':     auroc_macro,
                 'comparison':      self.comparison_report_,
                 'classification_report': classification_report(
                     y_test_labels, y_pred_labels, zero_division=0, output_dict=True
                 ),
+                'auroc_per_class': auroc_per_class,
             }
             with open(save_path, 'w', encoding='utf-8') as fh:
                 json.dump(output_data, fh, indent=4)

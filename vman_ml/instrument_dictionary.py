@@ -25,6 +25,19 @@ TARGET_ALIASES = {
     # exports (train_2016_tz.csv, train_2022_es.csv, train_2022_ng.csv).
     "who_ucod": "pcva_ucod",
     "who_ucod_icd": "pcva_ucod_icd",
+    # ucod_who / ucod_who_icd: same columns, word order reversed - the actual
+    # names in train16_tz.csv/train22_es.csv (checked against who_ucod/
+    # who_ucod_icd above, neither of which these files use). Without this
+    # alias _apply_who_causelist_mapping() sees no icd/ucod column at all for
+    # either file and silently skips WHO mapping, so every TZ/ES row stays
+    # unmapped and gets dropped later by the "unmapped_who_cause" quality
+    # filter - training on a combined TZ+ES+NG input then runs purely on NG
+    # data, and training on TZ+ES alone (no NG to carry a pcva_ucod_icd
+    # column into the union) leaves the combined frame with no icd_col at
+    # all, raising "ICD column 'pcva_ucod_icd' not found" from
+    # mapcauselist.build_mapping_report() (hit via --export-mapping).
+    "ucod_who": "pcva_ucod",
+    "ucod_who_icd": "pcva_ucod_icd",
     # pcva_icd10: train_2022_ng-1.csv's ICD column (despite the name, holds
     # ICD-11 codes, e.g. '1F40.Y', 'KB21.0'). Without this alias the pipeline
     # never saw pcva_ucod_icd and fell back to free-text matching on

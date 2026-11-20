@@ -19,13 +19,30 @@ except ImportError:
     HAS_SENTENCE_TRANSFORMERS = False
 
 
+def _embedding_dim(model) -> int:
+    # sentence-transformers renamed this method; prefer the new name to avoid
+    # the deprecation warning when it's available.
+    getter = getattr(model, 'get_embedding_dimension', None) or model.get_sentence_embedding_dimension
+    return getter()
+
+
 class NarrativeEmbedder:
     """Encodes free-text WHO VA narrative fields into fixed-length float vectors.
 
     Narrative columns (id10476, id10477, id10479, id10436) are concatenated
     per record and passed through a multilingual sentence-transformer model.
-    Records with no text get the embedding of the empty string (consistent
-    sentinel), so training and prediction are always aligned.
+
+    Records with no narrative text get an all-zero vector plus a trailing
+    `narr_emb_<dim>` presence flag (0.0) — not the model's encoding of the
+    empty string. A tree model can trivially learn to ignore an exact-zero
+    block when the flag says "absent", whereas the old approach (encoding ''
+    through the model) gave every narrative-less record the same arbitrary
+    *nonzero* point in embedding space - and since narrative columns are
+    entirely absent from some source datasets (e.g. all of Eswatini), that
+    point was perfectly correlated with "which country this came from",
+    risking the model learning "no narrative" as a country shortcut rather
+    than disregarding it. Zero + an explicit flag keeps narrative data a pure
+    supplement: free to help when present, structurally inert when absent.
     """
 
     def __init__(
@@ -71,12 +88,11 @@ class NarrativeEmbedder:
         return texts, found
 
     def embed(self, df: pd.DataFrame) -> pd.DataFrame | None:
-        """Return a DataFrame of narr_emb_N columns aligned to df's index.
+        """Return a DataFrame of narr_emb_N columns (plus a trailing presence
+        flag, see class docstring) aligned to df's index.
 
-        Returns None only when sentence-transformers is not installed.
-        Missing or empty narrative text is embedded as the empty-string vector
-        so the representation is consistent with training records that also
-        had no narratives.
+        Returns None only when sentence-transformers is not installed, or
+        encoding raises.
         """
         if not HAS_SENTENCE_TRANSFORMERS:
             if self.verbose:
@@ -84,29 +100,54 @@ class NarrativeEmbedder:
             return None
 
         texts, found_cols = self._extract_texts(df)
+        stripped = texts.str.strip()
+        has_text = stripped.ne('')
 
         try:
             model = self._embedding_model
-            embeddings = model.encode(
-                texts.tolist(),
-                show_progress_bar=False,
-                batch_size=64,
-                convert_to_numpy=True,
-            )
+
+            # Encode each *unique* non-empty text once. Narrative fields repeat
+            # heavily - identical phrasing across records, and every narrative-
+            # less record collapses to the same empty string - so deduping
+            # before encode() cuts transformer calls substantially (measured:
+            # 9,455 combined TZ+ES+NG rows -> 7,145 unique texts, 511 of them
+            # the empty string alone - now skipped entirely, not just deduped).
+            unique_texts = stripped[has_text].unique().tolist()
+            if unique_texts:
+                unique_vecs = model.encode(
+                    unique_texts, show_progress_bar=False, batch_size=64, convert_to_numpy=True,
+                )
+                dim    = unique_vecs.shape[1]
+                lookup = dict(zip(unique_texts, unique_vecs))
+            else:
+                dim    = _embedding_dim(model)
+                lookup = {}
+
+            embeddings = np.zeros((len(df), dim), dtype=np.float32)
+            for row_pos, (text, present) in enumerate(zip(stripped, has_text)):
+                if present:
+                    embeddings[row_pos] = lookup[text]
+            # Rows with no narrative text stay exactly zero (see class docstring).
         except Exception as exc:
             if self.verbose:
                 print(f"[NarrativeEmbedder] Encoding failed: {exc} — skipping.")
             return None
 
-        col_names = [f'narr_emb_{i}' for i in range(embeddings.shape[1])]
-        emb_df = pd.DataFrame(embeddings.astype(np.float32), index=df.index, columns=col_names)
+        col_names = [f'narr_emb_{i}' for i in range(dim)]
+        emb_df = pd.DataFrame(embeddings, index=df.index, columns=col_names)
+        # Presence flag, appended as one more narr_emb_* column so every
+        # existing narrative_dims_/narr_emb_ prefix check elsewhere (SHAP
+        # narrative-contribution grouping, predict.py's zero-fill fallback)
+        # picks it up automatically - it just rides along as "one more
+        # narrative dimension" that happens to be a clean 0/1 flag.
+        emb_df[f'narr_emb_{dim}'] = has_text.astype(np.float32).values
 
         if self.verbose:
-            n_nonempty = texts.str.strip().ne('').sum()
             present = found_cols if found_cols else ['(none found — used empty string)']
             print(
-                f"[NarrativeEmbedder] {len(df)} records, {n_nonempty} with text, "
-                f"{embeddings.shape[1]} dims | cols used: {present}"
+                f"[NarrativeEmbedder] {len(df)} records, {int(has_text.sum())} with text "
+                f"({len(unique_texts)} unique non-empty encoded), "
+                f"{emb_df.shape[1]} dims (incl. presence flag) | cols used: {present}"
             )
 
         return emb_df

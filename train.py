@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # vman3_ml/train.py
 # sentence_transformers/PyTorch and XGBoost both ship libomp; on macOS loading
 # two OpenMP runtimes in the same process causes a SIGSEGV.  Setting both vars
@@ -11,12 +12,15 @@ from vman_ml.processing import DataPreprocessor
 from vman_ml.training import ModelTrainer
 from vman_ml.mapcauselist import export_mapping_excel
 from vman_ml.label_audit import LabelAuditor, build_feature_labels
+from vman_ml.report import generate_markdown_summary
+from vman_ml.shap_report import generate_shap_figures
 import argparse
 import pandas as pd
 import numpy as np
 import sys
 import os
 import json
+import time
 from pathlib import Path
 from sklearn.model_selection import train_test_split as _holdout_split
 
@@ -39,31 +43,31 @@ Examples:
   python train.py --input data/va_2016_tz.csv --version 2016
 """,
     )
-    parser.add_argument('--input', required=True, nargs='+',
+    parser.add_argument('-i', '--input', required=True, nargs='+',
                         help='Path(s) to training CSV file(s). When multiple paths are '
                              'given a single unified model is trained on the combined data.')
-    parser.add_argument('--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     parser.add_argument('--min_vc', type=int, default=130,
                         help='Minimum value counts for the target value')
     parser.add_argument('--na_threshold', type=float, default=0.7,
                         help='Threshold for dropping NA columns per cause group')
     parser.add_argument('--taxonomy_file',
                         help='Path to an explicit cause taxonomy JSON file')
-    parser.add_argument('--audit_report', default='reports/training_audit_report.json',
+    parser.add_argument('-a', '--audit_report', default='reports/training_audit_report.json',
                         help='Path to save the pre-training audit report')
-    parser.add_argument('--report-version',
+    parser.add_argument('-r', '--report-version',
                         help='Version tag for this run, e.g. v1.1.0. '
                              'Saves all report outputs to reports/{version}/. '
                              'Overrides the --audit_report default when not set explicitly.')
-    parser.add_argument('--version', choices=['2016', '2022'],
+    parser.add_argument('-V', '--version', choices=['2016', '2022'],
                         help='Override instrument version (only used for single-input training)')
-    parser.add_argument('--target', default='pcva_who_cod',
+    parser.add_argument('-t', '--target', default='pcva_who_cod',
                         help='Target column. Default: pcva_who_cod (WHO standardised cause). '
                              'Pass pcva_ucod to use raw cause labels.')
-    parser.add_argument('--export-mapping', metavar='XLSX',
+    parser.add_argument('-e', '--export-mapping', metavar='XLSX',
                         help='Export a WHO cause-mapping audit workbook before training '
                              '(e.g. reports/who_mapping.xlsx)')
-    parser.add_argument('--label-audit', action='store_true',
+    parser.add_argument('-l', '--label-audit', action='store_true',
                         help='Run cleanlab label quality audit after training and write '
                              'results to --audit-report directory.')
     parser.add_argument('--llm-review', action='store_true',
@@ -80,6 +84,8 @@ Examples:
                              '(see DataPreprocessor.DEFAULT_CONFIRMATION_MAP). On by default.')
 
     args = parser.parse_args()
+
+    run_start = time.time()
 
     if args.report_version and args.audit_report == 'reports/training_audit_report.json':
         args.audit_report = f'reports/{args.report_version}/training_audit_report.json'
@@ -242,7 +248,47 @@ Examples:
     trainer.evaluate(X_holdout_scaled, y_holdout_encoded,
                      save_path=holdout_path, label='Hold-out')
 
+    # ------------------------------------------------------------------ #
+    # Timing — hyperparameter-search time (model fitting only) vs total   #
+    # run time (data loading, preprocessing, narrative embedding, etc.    #
+    # included). Appended to the audit report written above now that     #
+    # both figures are known.                                             #
+    # ------------------------------------------------------------------ #
+    total_seconds = round(time.time() - run_start, 1)
+    audit_report['training_seconds']  = trainer.training_seconds_
+    audit_report['total_run_seconds'] = total_seconds
+    with open(audit_report_path, 'w', encoding='utf-8') as handle:
+        json.dump(audit_report, handle, indent=2, ensure_ascii=False)
+
+    def _fmt_duration(seconds):
+        mins, secs = divmod(int(seconds), 60)
+        return f"{mins}m{secs:02d}s"
+
+    print(
+        f"Training time: {_fmt_duration(trainer.training_seconds_)}  "
+        f"(hyperparameter search only)   "
+        f"Total run time: {_fmt_duration(total_seconds)}",
+        flush=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Global SHAP feature-importance figures, on the hold-out set.        #
+    # Reporting extra only — never fails the run (see generate_shap_      #
+    # figures' own try/except for shap/matplotlib being unavailable).     #
+    # ------------------------------------------------------------------ #
+    shap_paths = generate_shap_figures(
+        trainer.best_model,
+        X_holdout_scaled,
+        feature_names=trainer._encoded_feature_columns,
+        output_dir=audit_report_path.parent,
+    )
+    if shap_paths:
+        print(f"SHAP figures saved: {', '.join(str(p) for p in shap_paths.values())}")
+
     print('Training completed.')
+
+    summary_path = generate_markdown_summary(audit_report_path.parent)
+    print(f"Markdown summary saved to {summary_path}")
 
     # ------------------------------------------------------------------ #
     # Label quality audit                                                  #
