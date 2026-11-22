@@ -23,6 +23,25 @@ def _table(rows, headers):
     return '\n'.join(lines)
 
 
+def build_notes(audit: dict, model_name: str) -> str:
+    """One-line auto-generated training-run summary.
+
+    Shared by train.py (embedded directly in the trained .pkl's artifacts
+    ['metrics']['notes'], so the admin panel's upload form can show it
+    without anyone hand-typing it - the person uploading a model has no
+    basis to describe a run they didn't do) and generate_markdown_summary
+    below (same text, same source data, so the two never drift apart).
+    """
+    tar        = (audit.get('training_audit_report')) or {}
+    n_files    = len((audit.get('input_files')) or [])
+    versions   = ', '.join((audit.get('instrument_versions')) or []) or 'n/a'
+    rows_final = tar.get('rows_final_for_training', 'n/a')
+    return (
+        f"Combined model trained on {n_files} input file(s) ({versions}); "
+        f"{rows_final} rows after quality filtering; best model: {model_name}."
+    )
+
+
 def _classification_table(report_dict, auroc_per_class=None, limit=None):
     auroc_per_class = auroc_per_class or {}
     rows = [
@@ -49,6 +68,35 @@ def generate_markdown_summary(report_dir, output_name='training_summary.md'):
     holdout = _load(report_dir / 'holdout_test_results.json')
 
     lines = [f"# Training Summary — {report_dir.name}", '']
+
+    if holdout:
+        comparison  = holdout.get('comparison') or {}
+        model_name  = holdout.get('model')
+        cv_f1_macro = (comparison.get(model_name) or {}).get('cv_f1_macro')
+        n_train     = (audit or {}).get('n_training_samples')
+        n_test      = (audit or {}).get('n_test_samples', holdout.get('n_records'))
+
+        notes = build_notes(audit or {}, model_name)
+
+        lines += [
+            '## Model Upload Info',
+            '',
+            'For reference - the admin panel reads all of this (including '
+            'Notes) directly from the uploaded .pkl\'s own embedded metadata; '
+            'nothing here needs to be retyped.',
+            '',
+            _table([
+                ('Version',          report_dir.name),
+                ('Notes',            notes),
+                ('Accuracy',         holdout.get('accuracy')),
+                ('F1 macro',         holdout.get('f1_macro')),
+                ('F1 weighted',      holdout.get('f1_weighted')),
+                ('CV F1 macro',      cv_f1_macro),
+                ('Training samples', n_train),
+                ('Test samples',     n_test),
+            ], ['Field', 'Value']),
+            '',
+        ]
 
     if audit:
         lines += [

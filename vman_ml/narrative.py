@@ -6,17 +6,28 @@ Handles Swahili, Yoruba, Spanish, English and 50+ other languages.
 """
 from __future__ import annotations
 
+import importlib.util
+import multiprocessing as mp
+
 import numpy as np
 import pandas as pd
 
 NARRATIVE_COLS = ['id10476', 'id10477', 'id10479', 'id10436']
 DEFAULT_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2'
 
-try:
-    from sentence_transformers import SentenceTransformer as _ST
-    HAS_SENTENCE_TRANSFORMERS = True
-except ImportError:
-    HAS_SENTENCE_TRANSFORMERS = False
+# Availability check only (importlib.util.find_spec has no import side
+# effects) - the real `import sentence_transformers` is deferred to
+# _embedding_model below. sentence-transformers pulls in torch, which loads
+# its own OpenMP runtime as a side effect of the import itself, not of
+# actually using it - and that collides with XGBoost's OpenMP thread pool at
+# nthread>1 (confirmed: merely `import torch` with nothing else running is
+# enough to crash a later multi-threaded XGBoost .fit()). Since this module
+# is imported (via processing.py/label_audit.py) in every train.py run
+# regardless of whether narrative embedding ever runs, eagerly importing
+# sentence_transformers here would poison every process that touches vman_ml
+# for any later multi-threaded XGBoost use. See embed_isolated() below for
+# how the actual embedding call avoids this for good.
+HAS_SENTENCE_TRANSFORMERS = importlib.util.find_spec('sentence_transformers') is not None
 
 
 def _embedding_dim(model) -> int:
@@ -70,6 +81,9 @@ class NarrativeEmbedder:
                     "sentence-transformers is required for narrative embeddings.\n"
                     "Install with: pip install sentence-transformers"
                 )
+            # Deliberately deferred to here, not module level - see the
+            # HAS_SENTENCE_TRANSFORMERS comment above for why.
+            from sentence_transformers import SentenceTransformer as _ST
             if self.verbose:
                 print(f"[NarrativeEmbedder] Loading '{self.model_name}' …")
             self._model = _ST(self.model_name)
@@ -151,3 +165,72 @@ class NarrativeEmbedder:
             )
 
         return emb_df
+
+    def embed_isolated(self, df: pd.DataFrame, timeout: float = 300.0) -> pd.DataFrame | None:
+        """Same contract as embed(), but runs the actual encoding in a freshly
+        spawned child process so sentence-transformers/torch never load into
+        this process.
+
+        Why: merely *importing* torch (not even using it) loads its bundled
+        OpenMP runtime as an import side effect, and that collides with
+        XGBoost's own OpenMP thread pool at nthread>1 - confirmed directly:
+        plain `import torch`, nothing else, was enough to crash a later
+        multi-threaded XGBoost .fit() with "OMP: Error #179: Function
+        pthread_mutex_init failed". Running the embedding entirely inside a
+        short-lived child process (spawn, not fork - fork on macOS inherits
+        the parent's already-initialised state and is the documented unsafe
+        choice here; spawn is Python's own default start method on macOS)
+        means this process is never touched by torch at all, so it stays
+        free to use XGBoost with multiple threads afterwards.
+
+        Falls back to returning None (same failure contract as embed()) if
+        sentence-transformers isn't installed, the child raises, or it
+        doesn't finish within `timeout` seconds.
+        """
+        if not HAS_SENTENCE_TRANSFORMERS:
+            if self.verbose:
+                print("[NarrativeEmbedder] sentence-transformers not installed — skipping.")
+            return None
+
+        # Only the columns embed() actually reads cross the process boundary -
+        # no need to pickle/ship the full (possibly 500+ column) training frame.
+        found = [c for c in self.narrative_cols if c in df.columns]
+        narrative_df = df[found].copy() if found else pd.DataFrame(index=df.index)
+
+        ctx   = mp.get_context('spawn')
+        queue = ctx.Queue()
+        proc  = ctx.Process(
+            target=_embed_worker,
+            args=(self.model_name, self.narrative_cols, self.verbose, narrative_df, queue),
+        )
+        proc.start()
+        try:
+            status, payload = queue.get(timeout=timeout)
+        except Exception:
+            proc.terminate()
+            proc.join()
+            if self.verbose:
+                print(f"[NarrativeEmbedder] Isolated embedding timed out after {timeout:.0f}s — skipping.")
+            return None
+        proc.join()
+
+        if status != 'ok' or payload is None:
+            if self.verbose:
+                print(f"[NarrativeEmbedder] Isolated embedding failed: {payload} — skipping.")
+            return None
+
+        return payload
+
+
+def _embed_worker(model_name, narrative_cols, verbose, narrative_df, queue):
+    """Runs inside the child process spawned by embed_isolated() - module-level
+    so it's picklable/importable by name under the 'spawn' start method.
+    Reconstructs a fresh NarrativeEmbedder here (not passed from the parent)
+    so nothing torch-related ever needs to cross the process boundary.
+    """
+    try:
+        embedder = NarrativeEmbedder(model_name=model_name, narrative_cols=narrative_cols, verbose=verbose)
+        result = embedder.embed(narrative_df)
+        queue.put(('ok', result))
+    except Exception as exc:
+        queue.put(('error', str(exc)))

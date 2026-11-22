@@ -166,7 +166,11 @@ python3 train.py -i vman_ml/resources/train16_tz.csv vman_ml/resources/train22_e
 
 The remaining options (`--min_vc`, `--na_threshold`, `--taxonomy_file`, `--llm-review`, `--audit-top-n`, `--audit-cv-folds`, `--no-confirmation-weights`) are long-form only — see `train.py --help` for the full list.
 
-Each model searches hyperparameters with `HalvingRandomSearchCV` (5-fold CV, 10 initial candidates by default, successive-halving — see [scikit-learn's docs](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.HalvingRandomSearchCV.html)): weaker candidates are eliminated early on a small sample of the training data, and only survivors are refit on progressively larger samples, which is substantially cheaper than giving every candidate a full 5-fold fit on the whole set (the previous `RandomizedSearchCV` behavior). Training prints a live progress line per model — fit count and elapsed time, so a multi-minute search doesn't look hung — without a percentage, since successive halving's real fit count isn't known upfront (it depends on how many candidates survive each round).
+**RandomForest** searches hyperparameters with `HalvingRandomSearchCV` (5-fold CV, 10 initial candidates by default, successive-halving — see [scikit-learn's docs](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.HalvingRandomSearchCV.html)): weaker candidates are eliminated early on a small sample of the training data, and only survivors are refit on progressively larger samples, substantially cheaper than giving every candidate a full 5-fold fit on the whole set.
+
+**XGBoost** uses plain `RandomizedSearchCV` instead (`_SEARCH_CLASS` in `vman_ml/training.py`) - *not* an oversight, a deliberate exception. XGBoost's sklearn wrapper hard-errors ("Invalid classes inferred from unique values of `y`") when it sees a different class set across fits on the same estimator instance, and with this project's long-tailed multiclass target (some causes have single-digit training support even after clustering), different small halving sub-samples/CV folds easily end up missing different rare classes - XGBoost then crashes on every fit while RandomForest sails through, silently disqualifying XGBoost from the model comparison entirely rather than losing it fairly. (This is exactly what happened in one real run: `comparison_report_` came back with only `RandomForest` in it, with noticeably worse metrics than XGBoost normally gets - confirmed by reproducing the crash directly, then confirming XGBoost wins again, by a wide margin, once given a plain `RandomizedSearchCV`.)
+
+Training prints a live progress line per model — fit count and elapsed time, so a multi-minute search doesn't look hung. RandomForest's line has no percentage (successive halving's real fit count isn't known upfront); XGBoost's does, since `RandomizedSearchCV`'s fit count is a fixed `candidates × folds`.
 
 Timing is also recorded: per-model fit time in `cv_results.json`/`holdout_test_results.json` (`comparison.<model>.fit_seconds`), and in `training_audit_report.json`, `training_seconds` (hyperparameter search only) and `total_run_seconds` (the whole run — data loading, preprocessing, narrative embeddings, search, evaluation). `training_summary.md` renders both under a "Timing" section.
 
@@ -212,8 +216,11 @@ The **model file (`.pkl`) is NOT distributed through pip** — it is maintained 
 ### Model update workflow
 
 1. Retrain: `python3 train.py ...` → new `models/vman_ccva.pkl`
-2. Upload the new `.pkl` via the VMan3 admin panel (Settings → Configurations → VMan ML)
+2. Upload the new `.pkl` via the VMan3 admin panel (Settings → Configurations → VMan ML) — the upload form asks for Version, Notes, Accuracy, F1 macro, F1 weighted, CV F1 macro, Training samples, and Test samples. All of these are collected in one place at the top of `training_summary.md`, under **"Model Upload Info"**, ready to copy into the form (Notes is a short auto-drafted summary — edit it before uploading, it's not meant to be pasted verbatim).
 3. The admin panel archives the old model and updates `model_registry.json` automatically
+4. **Restart the backend (and any Celery workers)** — the backend caches the loaded model in memory per worker process, keyed by file path, and the upload only overwrites the file on disk. A worker that already loaded a model for that path keeps serving the *old* one in memory until it restarts; there's no live-reload.
+
+The same six numeric fields (accuracy, f1_macro, f1_weighted, auroc_macro, cv_f1_macro, n_training_samples, n_test_samples) are also embedded directly in the saved `.pkl` itself, under `artifacts['metrics']` (see `ModelTrainer.save_model()`) — so if the backend's upload endpoint is ever changed to read them from the file instead of trusting the manually-typed form, that data is already there and won't drift from what's actually in the file. Not implemented backend-side yet.
 
 ### Code update workflow
 

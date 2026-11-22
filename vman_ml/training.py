@@ -1,6 +1,6 @@
 # vman3_ml/vman3_ml/training.py
 from sklearn.experimental import enable_halving_search_cv  # noqa: F401 - required to unlock HalvingRandomSearchCV
-from sklearn.model_selection import train_test_split, HalvingRandomSearchCV
+from sklearn.model_selection import train_test_split, HalvingRandomSearchCV, RandomizedSearchCV
 from sklearn.metrics import accuracy_score, f1_score, classification_report, get_scorer, roc_auc_score
 from sklearn.ensemble import RandomForestClassifier
 from collections import Counter
@@ -45,6 +45,22 @@ _PARAM_GRIDS = {
 _SEARCH_N_JOBS = {
     'RandomForest': 1,
     'XGBoost': 1,
+}
+
+# XGBoost's sklearn wrapper hard-errors ("Invalid classes inferred from
+# unique values of y") when it sees a different class set across fits on the
+# same estimator instance. HalvingRandomSearchCV fits candidates on small
+# sub-samples first, growing the sample each round - with a long-tailed
+# multiclass target (confirmed: one cause had only 11 training examples),
+# different sub-samples/CV folds can easily end up missing different rare
+# classes, and XGBoost then crashes on every single fit while RandomForest
+# (no such restriction) sails through - silently disqualifying XGBoost from
+# the comparison entirely rather than losing it fairly. RandomForest keeps
+# the halving speedup since it isn't affected; XGBoost falls back to a plain
+# RandomizedSearchCV, where every fit always sees the full training set.
+_SEARCH_CLASS = {
+    'RandomForest': HalvingRandomSearchCV,
+    'XGBoost':      RandomizedSearchCV,
 }
 
 _SCORING = 'f1_macro'
@@ -157,7 +173,19 @@ class ModelTrainer:
                 eval_metric='mlogloss',
                 tree_method='hist',
                 device='cpu',
-                nthread=-1,
+                # Benchmarked directly on this project's real combined dataset
+                # (7,177 rows x 357 features, same params XGBoost actually
+                # searches): 1 thread 19.65s, 4 threads 10.93s, 8 threads
+                # 11.91s, 14 threads 18.02s. 4 wins outright - this dataset
+                # doesn't have enough parallel work to keep 8+ threads busy,
+                # so coordination overhead erases the gain (14 threads is
+                # barely better than 1 - "nthread=-1", all cores, would have
+                # been the wrong default). Safe to set above 1 at all only
+                # because narrative embedding now runs in an isolated
+                # subprocess (NarrativeEmbedder.embed_isolated()) - torch is
+                # never imported into this process, which is what used to
+                # make any nthread>1 crash.
+                nthread=4,
                 random_state=42,
                 verbosity=0,
             )
@@ -323,21 +351,28 @@ class ModelTrainer:
             for _values in param_grid.values():
                 grid_size *= len(_values)
             n_candidates = min(n_iter_search, grid_size) if grid_size else n_iter_search
-            # total=None: HalvingRandomSearchCV eliminates candidates round by
-            # round (successive halving), so the real fit count isn't a simple
-            # candidates*folds product - see _FitProgress docstring.
-            progress = _FitProgress(label=name)
+
+            search_cls = _SEARCH_CLASS.get(name, RandomizedSearchCV)
+            if search_cls is HalvingRandomSearchCV:
+                # total=None: eliminates candidates round by round (successive
+                # halving), so the real fit count isn't a simple
+                # candidates*folds product - see _FitProgress docstring.
+                progress     = _FitProgress(label=name)
+                search_kwargs = {'n_candidates': n_candidates}
+            else:
+                progress     = _FitProgress(label=name, total=n_candidates * _cv_folds)
+                search_kwargs = {'n_iter': n_candidates}
 
             try:
                 with progress:
-                    search = HalvingRandomSearchCV(
+                    search = search_cls(
                         model,
                         param_distributions=param_grid,
-                        n_candidates=n_candidates,
                         cv=_cv_folds,
                         scoring=progress.wrap_scorer(get_scorer(_SCORING)),
                         random_state=42,
                         n_jobs=search_n_jobs,
+                        **search_kwargs,
                     )
                     search.fit(X_train, y_train, **fit_params)
             except Exception as exc:
@@ -448,8 +483,17 @@ class ModelTrainer:
     #  Save                                                                    #
     # ---------------------------------------------------------------------- #
 
-    def save_model(self, path='models', preprocessor=None, version=None):
-        """Save the best trained model and all preprocessing objects."""
+    def save_model(self, path='models', preprocessor=None, version=None, metrics=None):
+        """Save the best trained model and all preprocessing objects.
+
+        metrics, if given, is embedded as artifacts['metrics'] - the same
+        headline numbers (accuracy/f1_macro/f1_weighted/auroc_macro/
+        cv_f1_macro/n_training_samples/n_test_samples) shown in training_
+        summary.md's "Model Upload Info" section, so a backend that reads the
+        uploaded .pkl directly could pre-fill the admin panel's model-upload
+        form instead of requiring them typed in by hand. See train.py's
+        caller for how this dict is assembled from the hold-out evaluation.
+        """
         os.makedirs(path, exist_ok=True)
 
         versions = getattr(preprocessor, 'training_instrument_versions_', None)
@@ -504,6 +548,7 @@ class ModelTrainer:
             # Exact column order the scaler was fit on — used by CCVAPredictor
             # to reindex encoded prediction features to the right order.
             'scaler_feature_columns': self._encoded_feature_columns or [],
+            'metrics': metrics or {},
         }
 
         joblib.dump(artifacts, f"{path}/{model_filename}")
@@ -583,7 +628,14 @@ class ModelTrainer:
         return macro, per_class
 
     def evaluate(self, X_test, y_test, save_path=None, label='Val'):
-        """Evaluate the best model on a test/holdout set."""
+        """Evaluate the best model on a test/holdout set.
+
+        Returns the headline metrics dict (label, model, n_records, accuracy,
+        f1_macro, f1_weighted, auroc_macro) - same shape saved to save_path,
+        minus the per-class detail - so a caller (train.py) can thread the
+        hold-out numbers into save_model()'s embedded metrics without
+        re-reading them back off disk.
+        """
         if self.best_model is None:
             raise ValueError("No trained model. Call train() first.")
 
@@ -604,16 +656,20 @@ class ModelTrainer:
         )
         print(classification_report(y_test_labels, y_pred_labels, zero_division=0))
 
+        summary = {
+            'label':       label,
+            'model':       self.best_model_name_,
+            'n_records':   int(len(y_test)),
+            'accuracy':    round(float(acc), 4),
+            'f1_macro':    round(float(f1_macro), 4),
+            'f1_weighted': round(float(f1_weighted), 4),
+            'auroc_macro': auroc_macro,
+        }
+
         if save_path:
             os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
             output_data = {
-                'label':           label,
-                'model':           self.best_model_name_,
-                'n_records':       int(len(y_test)),
-                'accuracy':        round(float(acc), 4),
-                'f1_macro':        round(float(f1_macro), 4),
-                'f1_weighted':     round(float(f1_weighted), 4),
-                'auroc_macro':     auroc_macro,
+                **summary,
                 'comparison':      self.comparison_report_,
                 'classification_report': classification_report(
                     y_test_labels, y_pred_labels, zero_division=0, output_dict=True
@@ -623,3 +679,5 @@ class ModelTrainer:
             with open(save_path, 'w', encoding='utf-8') as fh:
                 json.dump(output_data, fh, indent=4)
             print(f"Evaluation saved → {save_path}")
+
+        return summary

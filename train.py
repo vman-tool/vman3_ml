@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 # vman3_ml/train.py
-# sentence_transformers/PyTorch and XGBoost both ship libomp; on macOS loading
-# two OpenMP runtimes in the same process causes a SIGSEGV.  Setting both vars
-# before any imports prevents the crash while keeping sklearn's joblib parallelism.
+# sentence_transformers/PyTorch and XGBoost both ship libomp; on macOS,
+# merely *importing* torch (whether or not it's ever used) loads its bundled
+# OpenMP runtime, and that alone is enough to crash a later multi-threaded
+# XGBoost .fit() with "OMP: Error #179: Function pthread_mutex_init failed" -
+# confirmed directly. This process now never imports torch at all: narrative
+# embedding runs in an isolated spawned subprocess (see
+# NarrativeEmbedder.embed_isolated()), so OMP_NUM_THREADS no longer needs to
+# be pinned to 1 here - XGBoost's own nthread=4 (vman_ml/training.py,
+# benchmarked directly on this project's data: faster than both 1 and
+# 8/14 threads) is what actually governs its thread count.
 import os
 os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
-os.environ.setdefault('OMP_NUM_THREADS', '1')
 os.environ.setdefault('HF_HUB_VERBOSITY', 'error')
 
 from vman_ml.processing import DataPreprocessor
 from vman_ml.training import ModelTrainer
 from vman_ml.mapcauselist import export_mapping_excel
 from vman_ml.label_audit import LabelAuditor, build_feature_labels
-from vman_ml.report import generate_markdown_summary
+from vman_ml.report import generate_markdown_summary, build_notes
 from vman_ml.shap_report import generate_shap_figures, generate_stratified_shap_figures
 import argparse
 import pandas as pd
@@ -145,7 +151,11 @@ Examples:
     # Narrative embeddings                                                 #
     # ------------------------------------------------------------------ #
     if preprocessor.narrative_embedder is not None:
-        emb_df = preprocessor.narrative_embedder.embed(_source_df)
+        # Isolated (spawned subprocess), not in-process embed() - keeps
+        # torch/sentence-transformers out of this process entirely, which is
+        # what lets the XGBoost search below use nthread>1 safely. See
+        # NarrativeEmbedder.embed_isolated()'s docstring for why that matters.
+        emb_df = preprocessor.narrative_embedder.embed_isolated(_source_df)
         if emb_df is not None:
             # Align to rows that survived quality-filtering / clustering
             emb_aligned = emb_df.reindex(X.index).fillna(0.0)
@@ -217,7 +227,6 @@ Examples:
     # ------------------------------------------------------------------ #
     trainer = ModelTrainer(verbose=args.verbose)
     trainer.train(X_train_raw, y_train_raw, sample_weight=w_train_raw)
-    trainer.save_model(preprocessor=preprocessor, version=preprocessor.instrument_version)
 
     # Internal val results (used for model selection during training)
     trainer.evaluate(trainer._X_test, trainer._y_test,
@@ -245,8 +254,29 @@ Examples:
     y_holdout_encoded = trainer.label_encoder.transform(y_holdout_raw)
 
     holdout_path = str(audit_report_path.parent / 'holdout_test_results.json')
-    trainer.evaluate(X_holdout_scaled, y_holdout_encoded,
-                     save_path=holdout_path, label='Hold-out')
+    holdout_metrics = trainer.evaluate(X_holdout_scaled, y_holdout_encoded,
+                                       save_path=holdout_path, label='Hold-out')
+
+    # Saved now (not right after train()) so the embedded metrics are complete -
+    # see ModelTrainer.save_model()'s docstring for what reads this.
+    cv_f1_macro = (trainer.comparison_report_.get(trainer.best_model_name_) or {}).get('cv_f1_macro')
+    trainer.save_model(
+        preprocessor=preprocessor,
+        version=preprocessor.instrument_version,
+        metrics={
+            'version':            args.report_version or preprocessor.instrument_version,
+            # Auto-generated, not hand-typed - the admin uploading this model
+            # has no basis to describe a run they didn't do (see build_notes).
+            'notes':              build_notes(audit_report, trainer.best_model_name_),
+            'accuracy':           holdout_metrics['accuracy'],
+            'f1_macro':           holdout_metrics['f1_macro'],
+            'f1_weighted':        holdout_metrics['f1_weighted'],
+            'auroc_macro':        holdout_metrics['auroc_macro'],
+            'cv_f1_macro':        cv_f1_macro,
+            'n_training_samples': int(len(X_train_raw)),
+            'n_test_samples':     int(len(X_holdout_raw)),
+        },
+    )
 
     # ------------------------------------------------------------------ #
     # Timing — hyperparameter-search time (model fitting only) vs total   #
@@ -255,8 +285,15 @@ Examples:
     # both figures are known.                                             #
     # ------------------------------------------------------------------ #
     total_seconds = round(time.time() - run_start, 1)
-    audit_report['training_seconds']  = trainer.training_seconds_
-    audit_report['total_run_seconds'] = total_seconds
+    audit_report['training_seconds']    = trainer.training_seconds_
+    audit_report['total_run_seconds']   = total_seconds
+    # Final deployed model's train/test split sizes - not the same as cv_
+    # results.json's n_records (that's the internal val split used only for
+    # picking a model between candidates). Needed for the VMan3 admin panel's
+    # model-upload form (n_training_samples/n_test_samples) - see
+    # report.py's "Model Upload Info" section.
+    audit_report['n_training_samples']  = int(len(X_train_raw))
+    audit_report['n_test_samples']      = int(len(X_holdout_raw))
     with open(audit_report_path, 'w', encoding='utf-8') as handle:
         json.dump(audit_report, handle, indent=2, ensure_ascii=False)
 
