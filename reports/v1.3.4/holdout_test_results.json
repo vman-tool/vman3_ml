@@ -1,0 +1,278 @@
+{
+    "label": "Hold-out",
+    "model": "XGBoost",
+    "n_records": 1846,
+    "accuracy": 0.8564,
+    "f1_macro": 0.8208,
+    "f1_weighted": 0.8513,
+    "auroc_macro": 0.993,
+    "comparison": {
+        "XGBoost": {
+            "cv_f1_macro": 0.8429,
+            "test_accuracy": 0.868,
+            "test_f1_macro": 0.835,
+            "best_params": {
+                "subsample": 1.0,
+                "n_estimators": 200,
+                "min_child_weight": 1,
+                "max_depth": 6,
+                "learning_rate": 0.05,
+                "colsample_bytree": 0.8
+            },
+            "fit_seconds": 1295.4
+        },
+        "RandomForest": {
+            "cv_f1_macro": 0.675,
+            "test_accuracy": 0.7901,
+            "test_f1_macro": 0.7376,
+            "best_params": {
+                "n_estimators": 100,
+                "min_samples_split": 5,
+                "min_samples_leaf": 1,
+                "max_depth": 10
+            },
+            "fit_seconds": 24.8
+        }
+    },
+    "classification_report": {
+        "Acute respiratory infection, including pneumonia": {
+            "precision": 0.7868852459016393,
+            "recall": 0.5853658536585366,
+            "f1-score": 0.6713286713286714,
+            "support": 82.0
+        },
+        "Birth asphyxia": {
+            "precision": 0.8448275862068966,
+            "recall": 0.8448275862068966,
+            "f1-score": 0.8448275862068966,
+            "support": 58.0
+        },
+        "Diabetes mellitus": {
+            "precision": 1.0,
+            "recall": 0.8333333333333334,
+            "f1-score": 0.9090909090909091,
+            "support": 30.0
+        },
+        "Diarrheal diseases": {
+            "precision": 0.9281437125748503,
+            "recall": 0.9281437125748503,
+            "f1-score": 0.9281437125748503,
+            "support": 167.0
+        },
+        "HIV/AIDS related death": {
+            "precision": 0.9606299212598425,
+            "recall": 0.9384615384615385,
+            "f1-score": 0.9494163424124513,
+            "support": 130.0
+        },
+        "Malaria": {
+            "precision": 0.8131067961165048,
+            "recall": 0.9626436781609196,
+            "f1-score": 0.881578947368421,
+            "support": 348.0
+        },
+        "Measles": {
+            "precision": 0.9523809523809523,
+            "recall": 0.6153846153846154,
+            "f1-score": 0.7476635514018691,
+            "support": 65.0
+        },
+        "Neonatal sepsis": {
+            "precision": 0.8235294117647058,
+            "recall": 0.8484848484848485,
+            "f1-score": 0.835820895522388,
+            "support": 66.0
+        },
+        "Obstetric haemorrhage": {
+            "precision": 0.7623762376237624,
+            "recall": 0.8461538461538461,
+            "f1-score": 0.8020833333333334,
+            "support": 91.0
+        },
+        "Other and unspecified cardiac disease": {
+            "precision": 0.7806451612903226,
+            "recall": 0.9758064516129032,
+            "f1-score": 0.8673835125448028,
+            "support": 124.0
+        },
+        "Other and unspecified maternal cause": {
+            "precision": 0.75,
+            "recall": 0.8571428571428571,
+            "f1-score": 0.8,
+            "support": 42.0
+        },
+        "Pregnancy-induced hypertension": {
+            "precision": 0.72,
+            "recall": 0.45,
+            "f1-score": 0.5538461538461539,
+            "support": 40.0
+        },
+        "Pregnancy-related sepsis": {
+            "precision": 1.0,
+            "recall": 0.9655172413793104,
+            "f1-score": 0.9824561403508771,
+            "support": 29.0
+        },
+        "Pulmonary tuberculosis": {
+            "precision": 0.9491525423728814,
+            "recall": 0.9180327868852459,
+            "f1-score": 0.9333333333333333,
+            "support": 61.0
+        },
+        "Road traffic accident": {
+            "precision": 0.975609756097561,
+            "recall": 0.9302325581395349,
+            "f1-score": 0.9523809523809523,
+            "support": 43.0
+        },
+        "Sepsis": {
+            "precision": 0.8928571428571429,
+            "recall": 0.78125,
+            "f1-score": 0.8333333333333334,
+            "support": 32.0
+        },
+        "Severe malnutrition": {
+            "precision": 1.0,
+            "recall": 0.7142857142857143,
+            "f1-score": 0.8333333333333334,
+            "support": 28.0
+        },
+        "Sickle cell with crisis": {
+            "precision": 0.7777777777777778,
+            "recall": 0.84,
+            "f1-score": 0.8076923076923077,
+            "support": 25.0
+        },
+        "Unknown and ill-defined cause of death": {
+            "precision": 0.7123287671232876,
+            "recall": 0.896551724137931,
+            "f1-score": 0.7938931297709924,
+            "support": 58.0
+        },
+        "cluster_diseases_of_the_circulatory_system": {
+            "precision": 0.8823529411764706,
+            "recall": 0.6818181818181818,
+            "f1-score": 0.7692307692307693,
+            "support": 22.0
+        },
+        "cluster_external_causes_of_death": {
+            "precision": 0.9807692307692307,
+            "recall": 0.9622641509433962,
+            "f1-score": 0.9714285714285714,
+            "support": 53.0
+        },
+        "cluster_gastrointestinal_disorders": {
+            "precision": 0.875,
+            "recall": 0.3181818181818182,
+            "f1-score": 0.4666666666666667,
+            "support": 22.0
+        },
+        "cluster_infectious_and_parasitic_diseases": {
+            "precision": 0.8461538461538461,
+            "recall": 0.7096774193548387,
+            "f1-score": 0.7719298245614035,
+            "support": 31.0
+        },
+        "cluster_mental_and_nervous_system_disorders": {
+            "precision": 0.9333333333333333,
+            "recall": 0.8235294117647058,
+            "f1-score": 0.875,
+            "support": 17.0
+        },
+        "cluster_neonatal_causes_of_death": {
+            "precision": 0.8867924528301887,
+            "recall": 0.9038461538461539,
+            "f1-score": 0.8952380952380953,
+            "support": 52.0
+        },
+        "cluster_neoplasms": {
+            "precision": 0.8918918918918919,
+            "recall": 0.6875,
+            "f1-score": 0.7764705882352941,
+            "support": 48.0
+        },
+        "cluster_non_communicable_diseases": {
+            "precision": 1.0,
+            "recall": 0.8888888888888888,
+            "f1-score": 0.9411764705882353,
+            "support": 9.0
+        },
+        "cluster_nutritional_and_endocrine_disorders": {
+            "precision": 1.0,
+            "recall": 0.2,
+            "f1-score": 0.3333333333333333,
+            "support": 5.0
+        },
+        "cluster_pregnancy_childbirth_and_puerperium_related_disorders": {
+            "precision": 0.9629629629629629,
+            "recall": 0.8387096774193549,
+            "f1-score": 0.896551724137931,
+            "support": 31.0
+        },
+        "cluster_renal_disorders": {
+            "precision": 0.7647058823529411,
+            "recall": 0.9285714285714286,
+            "f1-score": 0.8387096774193549,
+            "support": 14.0
+        },
+        "cluster_respiratory_disorders": {
+            "precision": 1.0,
+            "recall": 0.8947368421052632,
+            "f1-score": 0.9444444444444444,
+            "support": 19.0
+        },
+        "cluster_stillbirths": {
+            "precision": 1.0,
+            "recall": 0.75,
+            "f1-score": 0.8571428571428571,
+            "support": 4.0
+        },
+        "accuracy": 0.8564463705308776,
+        "macro avg": {
+            "precision": 0.8891941735255935,
+            "recall": 0.7912294474655285,
+            "f1-score": 0.8207790365079011,
+            "support": 1846.0
+        },
+        "weighted avg": {
+            "precision": 0.8637615244767488,
+            "recall": 0.8564463705308776,
+            "f1-score": 0.8513327109503882,
+            "support": 1846.0
+        }
+    },
+    "auroc_per_class": {
+        "Acute respiratory infection, including pneumonia": 0.9651,
+        "Birth asphyxia": 0.9972,
+        "Diabetes mellitus": 0.9998,
+        "Diarrheal diseases": 0.9958,
+        "HIV/AIDS related death": 0.9991,
+        "Malaria": 0.9896,
+        "Measles": 0.9673,
+        "Neonatal sepsis": 0.997,
+        "Obstetric haemorrhage": 0.9946,
+        "Other and unspecified cardiac disease": 0.9979,
+        "Other and unspecified maternal cause": 0.9929,
+        "Pregnancy-induced hypertension": 0.9839,
+        "Pregnancy-related sepsis": 0.9932,
+        "Pulmonary tuberculosis": 0.9985,
+        "Road traffic accident": 0.9999,
+        "Sepsis": 0.995,
+        "Severe malnutrition": 0.9882,
+        "Sickle cell with crisis": 0.9898,
+        "Unknown and ill-defined cause of death": 0.9858,
+        "cluster_diseases_of_the_circulatory_system": 0.9878,
+        "cluster_external_causes_of_death": 0.9999,
+        "cluster_gastrointestinal_disorders": 0.9836,
+        "cluster_infectious_and_parasitic_diseases": 0.9958,
+        "cluster_mental_and_nervous_system_disorders": 0.9958,
+        "cluster_neonatal_causes_of_death": 0.9992,
+        "cluster_neoplasms": 0.9969,
+        "cluster_non_communicable_diseases": 0.9905,
+        "cluster_nutritional_and_endocrine_disorders": 0.9958,
+        "cluster_pregnancy_childbirth_and_puerperium_related_disorders": 0.9997,
+        "cluster_renal_disorders": 0.9995,
+        "cluster_respiratory_disorders": 0.9996,
+        "cluster_stillbirths": 1.0
+    }
+}

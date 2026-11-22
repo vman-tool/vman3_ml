@@ -8,7 +8,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 from .instrument_dictionary import detect_instrument_version
 from .narrative import NarrativeEmbedder, NARRATIVE_COLS
-from .processing import normalize_categorical_series
+from .processing import (
+    normalize_categorical_series,
+    MATERNAL_ONLY_CAUSE_TITLES,
+    NEONATE_ONLY_CAUSE_TITLES,
+    MATERNAL_MAX_AGE_YEARS,
+)
 
 try:
     import shap as _shap
@@ -56,6 +61,22 @@ class CCVAPredictor:
         # 0.60 means ">60 % of feature columns are missing" — genuinely unusable.
         raw_dk = artifacts.get('dk_threshold', 0.60)
         self.dk_threshold = max(raw_dk, 0.60)
+        # cluster_* classes (processing.py's _cluster_rare_causes) are
+        # heterogeneous grab-bags by construction - the loosest decision
+        # boundary of any class in the model, and the real root cause behind
+        # a confirmed misclassification (VA uuid:006f9dde-... called
+        # "External Causes of Death" at 98% confidence despite zero injury
+        # evidence in the record). A record with no clear evidence for
+        # anything specific can still produce a very peaked softmax onto the
+        # nearest grab-bag, which plain entropy/confidence OOD doesn't catch
+        # since the distribution genuinely IS peaked - just onto the wrong
+        # kind of class. 0.90 is a heuristic default (most genuinely
+        # well-evidenced predictions clear it easily; this specific bug's
+        # softmax didn't), not yet backed by a proper per-cluster-class
+        # calibration study - override via artifacts['cluster_confidence_threshold']
+        # or by setting the attribute directly once there's real validation
+        # data to tune it against.
+        self.cluster_confidence_threshold = artifacts.get('cluster_confidence_threshold', 0.90)
         self.instrument_version          = artifacts.get('instrument_version')
         self.training_instrument_versions = artifacts.get('training_instrument_versions',
                                                           [self.instrument_version])
@@ -89,7 +110,7 @@ class CCVAPredictor:
         # load time, every time, specifically so it can't ship unnoticed the
         # way "Birth asphyxia" did on the first retrain that produced it as a
         # standalone class instead of a WHO cluster.
-        guarded = self._MATERNAL_ONLY_CLASSES | self._NEONATE_ONLY_CLASSES
+        guarded = self._MATERNAL_ONLY_CLASSES | self._NEONATE_ONLY_CLASSES | self._EXTERNAL_CAUSE_CLASSES
         unguarded_suspects = sorted(
             c for c in self.original_classes
             if c not in guarded and any(k in c.lower() for k in self._PLAUSIBILITY_KEYWORDS)
@@ -168,8 +189,29 @@ class CCVAPredictor:
     # Values that carry no interpretive meaning for a human reader.
     _UNINFORMATIVE_VALUES = frozenset({'nan', 'none', 'skipped', '?', '', 'null', 'na', 'n/a', '########'})
 
-    # Feature columns that are administrative/metadata, not clinical signals.
-    _SUPPRESSED_FEATURES = frozenset({'id10010c', 'id10010b', 'id10010a', 'id10010'})
+    # Feature columns that are administrative/metadata, not clinical signals:
+    # id10010* is the VA interviewer's own name/age/sex/ID (who conducted the
+    # interview, not who died); id10023* is the recorded date of death;
+    # id10069* is whether/whether-there-is-a-certificate for civil
+    # registration. None of these describe the decedent's symptoms, yet all
+    # three showed up as top "explainer" contributors on real records (date
+    # of death "pushing towards" Diabetes mellitus; the civil-registration
+    # question doing the same on two unrelated records) - confirmed these
+    # are genuinely in the trained feature set with real, non-trivial global
+    # importance (id10023_a ranked #57 of 742 features, on par with an
+    # actual diabetes-diagnosis question), almost certainly because date/
+    # administrative fields proxy for which source dataset or time period a
+    # record came from rather than anything clinical - a confound, not a
+    # cause. Suppressing them here stops them being shown as if they
+    # explained a decision; it does not stop the model using them, which
+    # argues for excluding them from the feature set itself on the next
+    # retrain (vman_ml/instrument_dictionary.py's feature-column selection),
+    # not just here.
+    _SUPPRESSED_FEATURES = frozenset({
+        'id10010', 'id10010a', 'id10010b', 'id10010c',
+        'id10023', 'id10023_a', 'id10023_b',
+        'id10069', 'id10069_a',
+    })
 
     # Cause-of-death classes that require the decedent to be an adult female
     # who could plausibly be pregnant or post-partum. Never valid for a male
@@ -187,27 +229,23 @@ class CCVAPredictor:
     # added here too, or that new class goes unguarded - see the
     # keyword-based load-time check in __init__ below, which exists
     # specifically to catch that before it ships silently again.
-    _MATERNAL_ONLY_CLASSES = frozenset({
-        'Pregnancy-related sepsis',
-        'cluster_pregnancy_childbirth_and_puerperium_related_disorders',
-        'Obstetric haemorrhage',
-        'Other and unspecified maternal cause',
-        'Pregnancy-induced hypertension',
-    })
+    #
+    # Imported from processing.py (single canonical copy) rather than
+    # redefined here - processing.py's DataPreprocessor._flag_implausible_cause_demographics
+    # enforces the training-time mirror of this same rule, and two
+    # independent copies of "which classes are maternal/neonate-only" is
+    # exactly the kind of drift that already bit this codebase once (see
+    # normalize_categorical_series's docstring).
+    _MATERNAL_ONLY_CLASSES = MATERNAL_ONLY_CAUSE_TITLES
 
     # Cause-of-death classes that, by WHO taxonomy definition, only apply to
     # a neonate (death within the first 28 days of life) or a stillbirth -
     # not merely rare in an older child or adult, but definitionally out of
     # scope for them. Same kind of near-tautological implausibility as
     # _MATERNAL_ONLY_CLASSES, just gated on the opposite direction (must be
-    # neonate, rather than must not be). See the retrain-dependence note on
-    # _MATERNAL_ONLY_CLASSES above - it applies here too.
-    _NEONATE_ONLY_CLASSES = frozenset({
-        'Neonatal sepsis',
-        'cluster_neonatal_causes_of_death',
-        'cluster_stillbirths',
-        'Birth asphyxia',
-    })
+    # neonate, rather than must not be). See the retrain-dependence and
+    # canonical-copy notes on _MATERNAL_ONLY_CLASSES above - both apply here.
+    _NEONATE_ONLY_CLASSES = NEONATE_ONLY_CAUSE_TITLES
 
     # WHO's standard definition of "women of reproductive age" is 15-49;
     # only the upper bound matters here since is_child/isneonatal already
@@ -215,7 +253,41 @@ class CCVAPredictor:
     # is exactly as implausible as one for a male decedent - being female
     # and nominally "adult" isn't on its own enough to make Pregnancy-related
     # sepsis etc. a plausible cause of death.
-    _MATERNAL_MAX_AGE_YEARS = 49
+    _MATERNAL_MAX_AGE_YEARS = MATERNAL_MAX_AGE_YEARS
+
+    # External-cause classes - standalone ("Road traffic accident") or the
+    # catch-all cluster that absorbs every other rare external-cause subtype
+    # (drowning, poisoning, burns, assault, firearm, animal bite,
+    # electrocution, falls, etc. - see processing.py's _cluster_rare_causes).
+    # That catch-all is a real root cause behind a confirmed misclassification:
+    # VA uuid:006f9dde-... was assigned "External Causes of Death" at 98%
+    # confidence despite every injury-mechanism answer in the record being
+    # "no" - a heterogeneous grab-bag class has the loosest decision
+    # boundary of any class in the model, making it an easy default basin
+    # for an ambiguous record with no real external-cause evidence at all.
+    # Same retrain-dependence note as _MATERNAL_ONLY_CLASSES above applies.
+    _EXTERNAL_CAUSE_CLASSES = frozenset({
+        'Road traffic accident',
+        'cluster_external_causes_of_death',
+    })
+
+    # Id10077 is the instrument's own injury/accident gate question ("Did
+    # (s)he suffer from any injury or accident that led to death?"); the
+    # rest are its specific-mechanism follow-ups (road traffic/transport,
+    # fall, poisoning, drowning, animal bite/sting, burns/fire, violence,
+    # firearm, stabbing, strangulation, blunt force, force of nature,
+    # electrocution, other). Deliberately excludes id10080/id10081 (role in
+    # a road accident / what was hit), id10088 (which animal/insect) and
+    # id10098/id10099 (accidental vs. self-inflicted) - those are detail
+    # follow-ups conditional on one of the mechanism questions already being
+    # "yes", not themselves evidence that an injury occurred. Column names
+    # are identical across the 2016_tz/2022_tz/2022_es instrument versions.
+    _INJURY_GATE_COLUMN = 'id10077'
+    _INJURY_MECHANISM_COLUMNS = (
+        'id10079', 'id10082', 'id10083', 'id10084', 'id10085', 'id10086',
+        'id10087', 'id10089', 'id10090', 'id10091', 'id10092', 'id10093',
+        'id10094', 'id10095', 'id10096', 'id10097',
+    )
 
     # Keywords suggestive of an age/sex-restricted cause. Used only to WARN
     # at load time when a model has a class matching one of these but absent
@@ -223,7 +295,8 @@ class CCVAPredictor:
     # isn't reliable enough to silently change what gets constrained. This is
     # exactly the gap that let a retrain's new "Birth asphyxia" class predict
     # for a 73-year-old unnoticed until it reached production.
-    _PLAUSIBILITY_KEYWORDS = ('neonat', 'stillbirth', 'birth asphyxia', 'pregnan', 'maternal', 'obstetric', 'puerperium')
+    _PLAUSIBILITY_KEYWORDS = ('neonat', 'stillbirth', 'birth asphyxia', 'pregnan', 'maternal', 'obstetric', 'puerperium',
+                              'external cause', 'road traffic', 'road transport', 'injur')
 
     @classmethod
     def _is_informative(cls, val) -> bool:
@@ -490,8 +563,17 @@ class CCVAPredictor:
         - Neonate/stillbirth-only causes (_NEONATE_ONLY_CLASSES) cannot be the
           cause of death for a decedent flagged as a child or an adult - they
           are only defined for a death in the first 28 days of life.
-        Both mirror vman_dq's ICI biological-plausibility rules, applied here
-        to the model's output rather than to input data quality.
+        - External-cause classes (_EXTERNAL_CAUSE_CLASSES) cannot be the
+          cause of death unless the record actually has some injury
+          evidence: the injury/accident gate question (Id10077) or at least
+          one specific injury-mechanism question answered "yes". A record
+          where every one of those is "no"/"dk" has no positive evidence of
+          an external cause at all, regardless of how confident the model's
+          raw softmax output looks - see _EXTERNAL_CAUSE_CLASSES above for
+          the real misclassification this is fixing.
+        All three mirror vman_dq's ICI biological-plausibility rules (the
+        first two) or InterVA5's own reasoning (the third), applied here to
+        the model's output rather than to input data quality.
 
         Silently leaves a rule's classes untouched if the demographic flag(s)
         it depends on aren't present in cleaned_df, or if none of that rule's
@@ -499,7 +581,18 @@ class CCVAPredictor:
         rule ends up applying to any row.
         """
         def _flag(name):
+            # Tries the exact column name, then a "<name>1" variant - at
+            # least one live instrument version (Ethiopia 2022) suffixes
+            # these particular calculated fields with "1"
+            # (ischild1/isneonatal1/isadult1) rather than the bare name every
+            # training dataset uses. Confirmed via a real misclassified VA
+            # record from that instrument version: without this fallback,
+            # is_child/is_neonate/is_adult below were silently all-False for
+            # every Ethiopian record, meaning this rule never actually fired
+            # for an entire country's predictions.
             s = self._col(cleaned_df, name)
+            if s is None:
+                s = self._col(cleaned_df, name + '1')
             if s is None:
                 return np.zeros(len(cleaned_df), dtype=bool)
             return s.astype(str).str.strip().str.lower().isin(['1', 'yes', 'true']).to_numpy()
@@ -509,9 +602,22 @@ class CCVAPredictor:
             sex.astype(str).str.strip().str.lower().eq('male').to_numpy()
             if sex is not None else np.zeros(len(cleaned_df), dtype=bool)
         )
-        is_child = _flag('ischild')
-        is_neonate = _flag('isneonatal')
-        is_adult = _flag('isadult')
+
+        # age_group is far more reliably populated across instrument
+        # versions than the calculated ischild/isneonatal/isadult flags -
+        # those are entirely empty in some training sets and, as above,
+        # renamed with a "1" suffix in at least one live instrument version.
+        # Prefer age_group when present; fall back to the flags otherwise.
+        age_group = self._col(cleaned_df, 'age_group')
+        if age_group is not None:
+            age_group_lower = age_group.astype(str).str.strip().str.lower()
+            is_child = age_group_lower.eq('child').to_numpy()
+            is_neonate = age_group_lower.eq('neonate').to_numpy()
+            is_adult = age_group_lower.eq('adult').to_numpy()
+        else:
+            is_child = _flag('ischild')
+            is_neonate = _flag('isneonatal')
+            is_adult = _flag('isadult')
 
         age_years = self._col(cleaned_df, 'ageinyears')
         too_old_for_maternal = (
@@ -519,9 +625,25 @@ class CCVAPredictor:
             if age_years is not None else np.zeros(len(cleaned_df), dtype=bool)
         )
 
+        # Only applies the rule when at least one of the underlying injury
+        # columns is actually present - same "leave untouched if the flags
+        # this rule needs aren't in the data" behaviour as the other two
+        # rules, rather than treating an instrument variant that lacks
+        # these columns entirely as "no evidence of injury, for everyone".
+        injury_columns = (self._INJURY_GATE_COLUMN,) + self._INJURY_MECHANISM_COLUMNS
+        injury_columns_present = [c for c in injury_columns if self._col(cleaned_df, c) is not None]
+        if injury_columns_present:
+            has_injury_evidence = np.zeros(len(cleaned_df), dtype=bool)
+            for col in injury_columns_present:
+                has_injury_evidence |= _flag(col)
+            no_injury_evidence = ~has_injury_evidence
+        else:
+            no_injury_evidence = np.zeros(len(cleaned_df), dtype=bool)
+
         rules = (
             (self._MATERNAL_ONLY_CLASSES, is_male | is_child | is_neonate | too_old_for_maternal),
             (self._NEONATE_ONLY_CLASSES, is_child | is_adult),
+            (self._EXTERNAL_CAUSE_CLASSES, no_injury_evidence),
         )
 
         adjusted = probs.copy()
@@ -744,6 +866,26 @@ class CCVAPredictor:
             final_ood_mask = ood_mask | dk_ood_mask.values
             decoded = self.label_encoder.inverse_transform(predictions)
             decoded[final_ood_mask] = 'out_of_distribution'
+
+            # A low-confidence cluster_* prediction gets demoted to the
+            # model's genuine "I don't know" class (if this model was
+            # trained with one - see processing.py's quality filter) or to
+            # out_of_distribution (older models that predate it) - see
+            # cluster_confidence_threshold's definition in __init__ for why.
+            cluster_mask = np.array(
+                [isinstance(c, str) and c.startswith('cluster_') for c in decoded]
+            )
+            low_confidence_cluster = (
+                cluster_mask & (confidence < self.cluster_confidence_threshold) & ~final_ood_mask
+            )
+            if low_confidence_cluster.any():
+                cluster_fallback = (
+                    'Unknown and ill-defined cause of death'
+                    if 'Unknown and ill-defined cause of death' in self.original_classes
+                    else 'out_of_distribution'
+                )
+                decoded[low_confidence_cluster] = cluster_fallback
+
             valid   = set(self.original_classes) | {'out_of_distribution'}
             decoded[~np.isin(decoded, list(valid))] = 'out_of_distribution'
 

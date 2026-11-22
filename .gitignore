@@ -115,5 +115,15 @@ data/
 !vman_ml/resources/whova_2022_instr_es.xlsx
 !vman_ml/resources/whova_2022_instr_tz.xlsx
 
+# Same reasoning for each reports/<version>/ run's own JSON artifacts -
+# generate_proposal.py's --report-version option reads these directly
+# (training_audit_report.json, cv_results.json, holdout_test_results.json)
+# to auto-populate the manuscript, which only works on a fresh clone if
+# they're actually committed. They're small (tens of KB), unlike the *.csv/
+# *.xlsx training data the blanket rule above is really aimed at.
+!reports/*/training_audit_report.json
+!reports/*/cv_results.json
+!reports/*/holdout_test_results.json
+
 # IDE files
 .DS_Store

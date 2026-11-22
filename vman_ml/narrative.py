@@ -15,6 +15,22 @@ import pandas as pd
 NARRATIVE_COLS = ['id10476', 'id10477', 'id10479', 'id10436']
 DEFAULT_EMBEDDING_MODEL = 'paraphrase-multilingual-MiniLM-L12-v2'
 
+# ODK's own "don't know"/"refused" sentinel codes ('dk', 'ref' - the same
+# tokens processing.py's normalize_categorical_series() and the raw xForm
+# skip-logic use for categorical answers), plus their written-out forms,
+# none of which are real narrative content. Before this, a free-text field
+# holding the literal string "dk" (a "don't know" response to what's
+# nominally a text question) was embedded as if the respondent had actually
+# described something - e.g. VA uuid:006f9dde-...'s id10477 held exactly
+# "dk", which _extract_texts treated as real text (though in that specific
+# case it turned out not to be what drove the misclassification - confirmed
+# by ablation). Blank-equivalent tokens are included too so they get the
+# same all-zero/no-narrative treatment as a genuinely empty field.
+_NON_RESPONSE_SENTINELS = frozenset({
+    'dk', 'ref', 'refused', "don't know", 'dont know', 'do not know',
+    'na', 'n/a', 'none', 'nil', 'no response', 'no_response', 'nan',
+})
+
 # Availability check only (importlib.util.find_spec has no import side
 # effects) - the real `import sentence_transformers` is deferred to
 # _embedding_model below. sentence-transformers pulls in torch, which loads
@@ -97,7 +113,13 @@ class NarrativeEmbedder:
             df[found]
             .fillna('')
             .astype(str)
-            .apply(lambda row: ' '.join(v.strip() for v in row if v.strip()), axis=1)
+            .apply(
+                lambda row: ' '.join(
+                    v.strip() for v in row
+                    if v.strip() and v.strip().lower() not in _NON_RESPONSE_SENTINELS
+                ),
+                axis=1,
+            )
         )
         return texts, found
 

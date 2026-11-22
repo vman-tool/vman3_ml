@@ -55,10 +55,18 @@ def normalize_categorical_series(series: pd.Series) -> pd.Series:
 # support a stable decision boundary regardless of how clinically important
 # the cause is.
 #
+# 'Unknown and ill-defined cause of death' (WHO causelist vas_id VAs-99) is
+# protected for a different reason: it's the model's only way to ever say
+# "I don't know" (see _apply_training_quality_filter, which used to drop
+# these rows entirely rather than train on them). Letting it be clustered
+# into cluster_other alongside unrelated rare causes would just recreate
+# the original problem - a vague catch-all with no real abstention signal.
+#
 # Override per-run via DataPreprocessor(protected_causes={...}) or
 # train.py's --protect-causes; this is just the default set.
 DEFAULT_PROTECTED_CAUSES = {
     'Sickle cell with crisis': 20,
+    'Unknown and ill-defined cause of death': 20,
 }
 
 # cause -> (confirmation question column(s), sample_weight multiplier).
@@ -74,11 +82,81 @@ DEFAULT_CONFIRMATION_MAP = {
     'HIV/AIDS related death':   ('id10127', 3.0),
 }
 
+# Cause-of-death classes that, by WHO taxonomy definition, apply only to an
+# adult female who could plausibly be pregnant or post-partum - never a male,
+# child or neonate decedent. The single canonical copy: prediction.py's
+# CCVAPredictor imports these same names rather than keeping its own parallel
+# list, specifically so the two can't drift out of sync the way
+# normalize_categorical_series's casing fix had to independently land in three
+# separate places before someone noticed the third copy (see that function's
+# docstring). This list is retrain-dependent - which causes end up as real
+# standalone classes versus folded into a WHO cluster depends on min_vc and
+# how many examples of each this specific training run had - a class named
+# here is only useful if the *current* model actually has it; see
+# CCVAPredictor.__init__'s keyword-based load-time check, which warns when a
+# class looks age/sex-restricted by name but isn't in either guard list.
+MATERNAL_ONLY_CAUSE_TITLES = frozenset({
+    'Pregnancy-related sepsis',
+    'cluster_pregnancy_childbirth_and_puerperium_related_disorders',
+    'Obstetric haemorrhage',
+    'Other and unspecified maternal cause',
+    'Pregnancy-induced hypertension',
+})
+
+# Cause-of-death classes that, by WHO taxonomy definition, only apply to a
+# neonate (death within the first 28 days of life) or a stillbirth - not
+# merely rare in an older child or adult, but definitionally out of scope for
+# them. Same canonical-copy rationale and retrain-dependence note as
+# MATERNAL_ONLY_CAUSE_TITLES above.
+NEONATE_ONLY_CAUSE_TITLES = frozenset({
+    'Neonatal sepsis',
+    'cluster_neonatal_causes_of_death',
+    'cluster_stillbirths',
+    'Birth asphyxia',
+})
+
+# WHO's standard definition of "women of reproductive age" is 15-49; a
+# maternal-cause prediction above this age is exactly as implausible as one
+# for a male decedent.
+MATERNAL_MAX_AGE_YEARS = 49
+
+# Feature columns that correlate with which dataset a record came from for a
+# confirmed DATA-QUALITY reason, not a real demographic/clinical one -
+# columns combine_datasets' feature_mode='intersection' can't catch on its
+# own because they're nominally present in every dataset, just
+# inconsistently or incorrectly formatted:
+#
+# id10023 (date of death): 2016_tz stores it as MM/DD/YY text, 2022_es mixes
+# DD/MM/YYYY and M/D/YY, and the 2022 Nigeria export is broken outright -
+# 24.6% of its rows hold the literal Excel overflow placeholder "########",
+# and most of the rest are raw Excel serial-date integers never converted to
+# a date at all. That format signature is a near-perfect "which dataset is
+# this" flag (confirmed: normalized mutual information against dataset-of-
+# origin far exceeds the true label's own), not a clinical signal - a model
+# trained on it is learning the three source files' export quirks, not when
+# people tend to die of what.
+#
+# Override per-run via DataPreprocessor(excluded_features={...}); this is
+# just the default set, and separate from protected_causes/min_vc above
+# (those govern which *target labels* survive clustering, not which *raw
+# survey columns* become model features).
+DEFAULT_EXCLUDED_FEATURES = frozenset({
+    'id10023', 'id10023_a', 'id10023_b',
+    # id10069_a ("Do you have a Death Certificate from the Civil Registry?")
+    # is id10069's own follow-up - same civil-registration administrative
+    # topic, not a symptom. id10069 itself is already excluded automatically
+    # by feature_mode='intersection' (it's 2016_tz-only), but id10069_a
+    # exists in more than one dataset and still showed real leak-risk NMI
+    # against dataset-of-origin, so it needs the explicit exclusion too.
+    'id10069_a',
+})
+
 
 class DataPreprocessor:
-    def __init__(self, verbose=False, min_vc=130, na_threshold=0.7, use_quality_filter=True, taxonomy_path=None, instrument_version=None, protected_causes=None):
+    def __init__(self, verbose=False, min_vc=130, na_threshold=0.7, use_quality_filter=True, taxonomy_path=None, instrument_version=None, protected_causes=None, excluded_features=None):
         self.verbose = verbose
         self.min_vc = min_vc
+        self.excluded_features = set(DEFAULT_EXCLUDED_FEATURES if excluded_features is None else excluded_features)
         self.protected_causes = dict(DEFAULT_PROTECTED_CAUSES if protected_causes is None else protected_causes)
         self.na_threshold = na_threshold
         self.use_quality_filter = use_quality_filter
@@ -154,10 +232,18 @@ class DataPreprocessor:
         return detection, self.instrument_dictionary
 
     def _get_feature_columns(self, df, instrument_dictionary=None):
-        """Return the feature columns that are present in the dataframe for the detected instrument."""
+        """Return the feature columns that are present in the dataframe for
+        the detected instrument, minus self.excluded_features (see
+        DEFAULT_EXCLUDED_FEATURES - columns known to leak dataset-of-origin
+        through a data-quality defect rather than carry real clinical
+        signal). Applied here, the single place both combine_datasets' and
+        _prepare_training_data's single-dataset path call through, so a
+        single-file training run gets the same exclusion a combined run does.
+        """
         if instrument_dictionary:
             selected, missing = select_feature_columns(df, instrument_dictionary)
             if selected:
+                selected = [c for c in selected if c not in self.excluded_features]
                 if self.verbose and missing:
                     print(f"Instrument dictionary missing {len(missing)} feature columns in the input data")
                 return selected, missing
@@ -166,7 +252,7 @@ class DataPreprocessor:
         selected = []
         for _, columns in legacy_sets.items():
             for column in columns:
-                if column in df.columns and column not in selected:
+                if column in df.columns and column not in selected and column not in self.excluded_features:
                     selected.append(column)
         return selected, []
     
@@ -238,23 +324,57 @@ class DataPreprocessor:
     def combine_datasets(
         self,
         dataset_specs,
+        feature_mode: str = 'intersection',
     ) -> tuple[pd.DataFrame, list[str], list[str]]:
         """Load, preprocess, WHO-map and feature-align multiple datasets.
 
-        Each dataset is processed with its own instrument version (auto-detected
-        from filename / column overlap).  Feature columns from all versions are
-        unioned; records missing a version-specific column receive the 'dk'
-        sentinel so the model can learn the absence pattern.
+        Each dataset is processed with its own instrument version
+        (auto-detected from filename / column overlap).
+
+        feature_mode:
+          'intersection' (default) - only keep feature columns present as a
+              real surveyed field in EVERY dataset being combined. A column
+              that exists in only one or two of the source instrument
+              versions is, by construction, 'dk' for every record of
+              whichever dataset(s) lack it - making "is this dk or not" a
+              perfect, deterministic proxy for which dataset/instrument
+              version a record came from, not a clinical signal.
+
+              Confirmed on this project's own 3-dataset training mix
+              (2016_tz/2022_es/2022_tz): 157 of 499 raw survey feature
+              columns (31%) exist in only one or two of the three - the
+              worst single offender, id10069 (civil registration consent,
+              2016_tz-only), kept showing up as a top "explainer" for
+              completely unrelated causes in the single-record ML analysis
+              panel. A systematic check (normalized mutual information
+              against dataset-of-origin, all 499 raw feature columns) found
+              dozens more with far higher predictability-from-source than
+              the true label has: up to 0.94, vs. 0.235 for the actual
+              physician-assigned cause itself. That gap is the signature of
+              a spurious shortcut, not genuine signal - it inflates apparent
+              accuracy on this fixed combination of datasets without
+              generalising to a new deployment that wasn't part of training.
+          'union' - the old behaviour: every dataset's own feature columns,
+              'dk'-filled where a dataset lacks them. Kept only for
+              comparison/debugging against the above - not recommended for
+              a model meant to generalise beyond these exact datasets.
 
         Args:
             dataset_specs: iterable of paths (str/Path) OR dicts with keys
                            'path' (required) and 'version' (optional override).
+            feature_mode: 'intersection' (default) or 'union' - see above.
 
         Returns:
-            combined_df:           All records stacked with union feature set.
+            combined_df:           All records stacked with the selected feature set.
             versions_used:         Deduplicated ordered list of detected versions.
-            union_feature_columns: Ordered union of feature columns across all datasets.
+            union_feature_columns: Ordered selected feature columns (name kept for
+                                    backward compatibility with existing callers;
+                                    this is the intersection, not the union, under
+                                    the default feature_mode).
         """
+        if feature_mode not in ('intersection', 'union'):
+            raise ValueError(f"feature_mode must be 'intersection' or 'union', got {feature_mode!r}")
+
         records: list[tuple[pd.DataFrame, str, list[str]]] = []
         versions_seen: list[str] = []
 
@@ -307,15 +427,35 @@ class DataPreprocessor:
                     seen_cols.add(col)
                     union_features.append(col)
 
-        # Align each dataset to the full union (fill absent version cols with 'dk')
+        if feature_mode == 'intersection' and len(records) > 1:
+            per_dataset_cols = [set(feat_cols) for _, _, feat_cols in records]
+            intersection_cols = set.intersection(*per_dataset_cols)
+            selected_features = [c for c in union_features if c in intersection_cols]
+            if self.verbose:
+                dropped = [c for c in union_features if c not in intersection_cols]
+                print(f"combine_datasets (intersection mode): keeping {len(selected_features)} "
+                      f"of {len(union_features)} feature columns present in every dataset; "
+                      f"dropping {len(dropped)} dataset-identity-leak risk column(s) found in "
+                      f"only some of them: {dropped[:20]}{'...' if len(dropped) > 20 else ''}")
+        else:
+            selected_features = union_features
+
+        # Align each dataset to the selected feature set (fill any still-
+        # absent column with 'dk' - only possible in 'union' mode, since an
+        # intersection column is present in every dataset by construction).
+        # Non-feature passthrough columns (target, WHO metadata, narrative
+        # text) ride along unfiltered regardless of feature_mode - the
+        # intersection restriction only ever applies to model features.
         aligned: list[pd.DataFrame] = []
         for df_slice, _, _ in records:
-            missing = [c for c in union_features if c not in df_slice.columns]
+            non_feature_cols = [c for c in df_slice.columns if c not in union_features]
+            missing = [c for c in selected_features if c not in df_slice.columns]
             if missing:
                 df_slice = df_slice.copy()
                 for col in missing:
                     df_slice[col] = 'dk'
-            aligned.append(df_slice)
+            keep_cols = list(dict.fromkeys(selected_features + non_feature_cols))
+            aligned.append(df_slice[keep_cols])
 
         combined_df   = pd.concat(aligned, axis=0, ignore_index=True)
         versions_used = list(dict.fromkeys(versions_seen))
@@ -323,9 +463,10 @@ class DataPreprocessor:
         if self.verbose:
             print(f"combine_datasets: {len(records)} datasets "
                   f"({', '.join(versions_used)}) → "
-                  f"{len(combined_df)} rows, {len(union_features)} union features")
+                  f"{len(combined_df)} rows, {len(selected_features)} feature columns "
+                  f"({feature_mode} mode)")
 
-        return combined_df, versions_used, union_features
+        return combined_df, versions_used, selected_features
 
     def _prepare_training_data(self, df, target_col='pcva_who_cod', source_path=None, instrument_version=None,
                                preselected_feature_columns=None):
@@ -554,25 +695,51 @@ class DataPreprocessor:
         substring_patterns   = [p for p in unknown_patterns if p not in _WHOLE_VALUE_ONLY]
 
         norm_lower = label_series.str.lower()
-        invalid_mask = (
-            label_series.eq('') |
-            norm_lower.isin({'nan', 'none'}) |
-            norm_lower.isin(whole_value_patterns)
-        )
+
+        # Truly blank/missing - no label was ever assigned, not even an
+        # "indeterminate" conclusion - there's nothing to learn from these,
+        # so they stay dropped.
+        blank_mask = label_series.eq('') | norm_lower.isin({'nan', 'none'})
+
+        # A genuine "indeterminate" conclusion (the WHO causelist's own
+        # 'Unknown and ill-defined cause of death' entry - vas_id VAs-99 -
+        # or any other text matching these patterns) used to be dropped
+        # here too, denying the model any way to ever output "I don't
+        # know": every record was forced into one of the remaining specific
+        # causes, including records with no real evidence for any of them.
+        # (Root cause of a real misclassification: VA uuid:006f9dde-...
+        # was called "External Causes of Death" at 98% confidence despite
+        # every injury-mechanism answer being "no" - the model had never
+        # seen an indeterminate example to recognise this pattern as one.)
+        # These rows are now kept as training examples instead of
+        # discarded, so the model has a real class to fall back to instead
+        # of always being confidently wrong on genuinely ambiguous cases.
+        pattern_mask = norm_lower.isin(whole_value_patterns)
         if substring_patterns:
-            invalid_mask = invalid_mask | norm_lower.str.contains(
+            pattern_mask = pattern_mask | norm_lower.str.contains(
                 '|'.join(re.escape(pattern) for pattern in substring_patterns), na=False
             )
-        report['dropped_missing_or_unknown'] = int(invalid_mask.sum())
-        if invalid_mask.any():
+        indeterminate_mask = pattern_mask & ~blank_mask
+
+        report['dropped_missing_or_unknown'] = int(blank_mask.sum())
+        report['kept_as_indeterminate'] = int(indeterminate_mask.sum())
+        if blank_mask.any():
             report['details']['filtered_missing_or_unknown'] = (
-                working.loc[invalid_mask, target_col]
+                working.loc[blank_mask, target_col]
                 .value_counts()
                 .rename_axis('cause')
                 .reset_index(name='count')
                 .to_dict('records')
             )
-        working = working.loc[~invalid_mask].copy()
+        if indeterminate_mask.any():
+            report['details']['kept_as_indeterminate'] = (
+                working.loc[indeterminate_mask, target_col]
+                .value_counts()
+                .rename_axis('cause')
+                .reset_index(name='count')
+                .to_dict('records')
+            )
+        working = working.loc[~blank_mask].copy()
 
         working, report = self._flag_implausible_cause_demographics(
             working, target_col=target_col, report=report,
@@ -639,42 +806,78 @@ class DataPreprocessor:
 
     def _flag_implausible_cause_demographics(self, df, target_col, report):
         """Drop training rows where the physician-assigned cause of death is
-        biologically implausible for the decedent's recorded sex - e.g. a
-        pregnancy/childbirth-related cause assigned to a male decedent, or a
-        male-only cause (male reproductive neoplasms) assigned to a female
-        decedent. Since cause assignment here is done by physicians, human
-        entry/transcription error is possible ("maternal on man") and should
-        not be allowed to teach the model an anatomically impossible
-        association.
+        biologically/demographically implausible for the decedent - e.g. a
+        pregnancy/childbirth-related cause assigned to a male, child or
+        neonate decedent, a male-only cause assigned to a female decedent, or
+        a neonate/stillbirth-only cause assigned to a child or adult
+        decedent. Since cause assignment here is done by physicians (or
+        derived from a possibly-inconsistent age_group field), human entry/
+        transcription error is possible ("maternal on man", a stillbirth
+        recorded under age_group=child) and should not be allowed to teach
+        the model a biologically impossible association.
+
+        This is the training-time mirror of CCVAPredictor's
+        _apply_plausibility_constraints, which guards the same classes at
+        inference time regardless of what the training data says - but a
+        contradictory training row still teaches the model from a confusing
+        signal even when the inference-time guard masks its output, so both
+        sides matter. Real counts on the 2016_tz/2022_es/2022_ng training
+        set: 20 maternal-cause-on-male rows (sex-based, always checked), plus
+        4 maternal-cause-on-child, 28 neonate-only-cause-on-child and 4
+        neonate-only-cause-on-adult rows (age_group-based, checked below).
         """
         sex_col = self._col(df, 'id10019')
         major_col = self._col(df, 'pcva_who_major')
-        if sex_col is None or target_col not in df.columns:
+        age_group_col = self._col(df, 'age_group')
+        if (sex_col is None and age_group_col is None) or target_col not in df.columns:
             return df, report
 
-        sex = df[sex_col].astype(str).str.strip().str.lower()
         label_lower = df[target_col].astype(str).str.strip().str.lower()
         major = df[major_col].astype(str).str.strip().str.lower() if major_col else pd.Series('', index=df.index)
-
-        maternal_on_male = (sex == 'male') & (
-            major.str.startswith('pregnancy') | label_lower.isin(self._FEMALE_ONLY_CAUSE_TITLES)
+        is_maternal_label = major.str.startswith('pregnancy') | label_lower.isin(
+            {c.lower() for c in MATERNAL_ONLY_CAUSE_TITLES}
         )
-        male_only_on_female = (sex == 'female') & label_lower.isin(self._MALE_ONLY_CAUSE_TITLES)
-        implausible = maternal_on_male | male_only_on_female
+        is_neonate_label = label_lower.isin({c.lower() for c in NEONATE_ONLY_CAUSE_TITLES})
+
+        if sex_col is not None:
+            sex = df[sex_col].astype(str).str.strip().str.lower()
+            maternal_on_male = (sex == 'male') & (
+                is_maternal_label | label_lower.isin({c.lower() for c in self._FEMALE_ONLY_CAUSE_TITLES})
+            )
+            male_only_on_female = (sex == 'female') & label_lower.isin(
+                {c.lower() for c in self._MALE_ONLY_CAUSE_TITLES}
+            )
+        else:
+            maternal_on_male = pd.Series(False, index=df.index)
+            male_only_on_female = pd.Series(False, index=df.index)
+
+        if age_group_col is not None:
+            age_group = df[age_group_col].astype(str).str.strip().str.lower()
+            maternal_on_child_or_neonate = is_maternal_label & age_group.isin({'child', 'neonate'})
+            neonate_on_child_or_adult = is_neonate_label & age_group.isin({'child', 'adult'})
+        else:
+            maternal_on_child_or_neonate = pd.Series(False, index=df.index)
+            neonate_on_child_or_adult = pd.Series(False, index=df.index)
+
+        implausible = (
+            maternal_on_male | male_only_on_female
+            | maternal_on_child_or_neonate | neonate_on_child_or_adult
+        )
 
         n = int(implausible.sum())
         report['dropped_implausible_demographics'] = n
         if n:
+            detail_cols = [c for c in (sex_col, age_group_col, target_col) if c]
             report['details']['implausible_demographics'] = (
-                df.loc[implausible, [sex_col, target_col]]
+                df.loc[implausible, detail_cols]
                 .value_counts()
-                .rename_axis(['sex', 'cause'])
                 .reset_index(name='count')
                 .to_dict('records')
             )
             if self.verbose:
                 print(f"Demographic plausibility filter: dropping {n} record(s) with a "
-                      f"sex-implausible cause of death (e.g. maternal cause on a male decedent).")
+                      f"sex- or age-implausible cause of death (e.g. maternal cause on a "
+                      f"male/child decedent, neonatal cause on a child/adult decedent).")
 
         return df.loc[~implausible].copy(), report
 
@@ -747,6 +950,7 @@ class DataPreprocessor:
             'rows_after_clustering': int(cluster_report.get('rows_after_clustering', 0)),
             'rows_final_for_training': int(final_rows),
             'missing_or_unknown_labels': int(quality_report.get('dropped_missing_or_unknown', 0)),
+            'kept_as_indeterminate_labels': int(quality_report.get('kept_as_indeterminate', 0)),
             'unmapped_who_cause_labels': int(quality_report.get('dropped_unmapped_who_cause', 0)),
             'implausible_demographic_labels': int(quality_report.get('dropped_implausible_demographics', 0)),
             'vman_dq_pregnancy_male_contradictions': int(quality_report.get('dropped_vman_dq_pregnancy_male_contradiction', 0)),
@@ -756,6 +960,7 @@ class DataPreprocessor:
             'quality_agree_rows': int(quality_report.get('qc_agree_rows', 0)),
             'clustered_rare_labels': int(cluster_report.get('clustered_label_count', 0)),
             'filtered_causes': quality_details.get('filtered_missing_or_unknown', []),
+            'kept_as_indeterminate_causes': quality_details.get('kept_as_indeterminate', []),
             'implausible_demographic_causes': quality_details.get('implausible_demographics', []),
             'inconsistent_causes': quality_details.get('inconsistent_causes', []),
             'clustered_causes': cluster_report.get('clustered_causes', []),

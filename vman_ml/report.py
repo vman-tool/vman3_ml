@@ -127,6 +127,10 @@ def generate_markdown_summary(report_dir, output_name='training_summary.md'):
                 ('vman_dq low ICI (< 70%)',                tar.get('vman_dq_low_ici_rows')),
             ], ['Reason', 'Rows dropped']),
             '',
+            f"Kept as a genuine 'Unknown and ill-defined cause of death' training example "
+            f"(no longer dropped - see processing.py's quality filter): "
+            f"{tar.get('kept_as_indeterminate_labels', 0)} rows.",
+            '',
         ]
 
         ici = tar.get('vman_dq_ici_summary') or {}
