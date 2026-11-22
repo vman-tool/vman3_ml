@@ -1,0 +1,163 @@
+{
+    "label": "Val",
+    "model": "XGBoost",
+    "n_records": 564,
+    "accuracy": 0.9326,
+    "f1_macro": 0.9184,
+    "f1_weighted": 0.9311,
+    "comparison": {
+        "XGBoost": {
+            "cv_f1_macro": 0.8897,
+            "test_accuracy": 0.9326,
+            "test_f1_macro": 0.9184,
+            "best_params": {
+                "subsample": 1.0,
+                "n_estimators": 100,
+                "min_child_weight": 1,
+                "max_depth": 9,
+                "learning_rate": 0.2,
+                "colsample_bytree": 1.0
+            }
+        },
+        "RandomForest": {
+            "cv_f1_macro": 0.8245,
+            "test_accuracy": 0.867,
+            "test_f1_macro": 0.8132,
+            "best_params": {
+                "n_estimators": 300,
+                "min_samples_split": 10,
+                "min_samples_leaf": 1,
+                "max_depth": 20
+            }
+        }
+    },
+    "classification_report": {
+        "Diabetes mellitus": {
+            "precision": 0.96,
+            "recall": 1.0,
+            "f1-score": 0.9795918367346939,
+            "support": 24.0
+        },
+        "HIV/AIDS related death": {
+            "precision": 0.9702970297029703,
+            "recall": 0.9423076923076923,
+            "f1-score": 0.9560975609756097,
+            "support": 104.0
+        },
+        "Malaria": {
+            "precision": 0.9423076923076923,
+            "recall": 0.98,
+            "f1-score": 0.9607843137254902,
+            "support": 50.0
+        },
+        "Other and unspecified cardiac disease": {
+            "precision": 0.8828828828828829,
+            "recall": 0.98,
+            "f1-score": 0.9289099526066351,
+            "support": 100.0
+        },
+        "Pulmonary tuberculosis": {
+            "precision": 0.94,
+            "recall": 0.9791666666666666,
+            "f1-score": 0.9591836734693877,
+            "support": 48.0
+        },
+        "Road traffic accident": {
+            "precision": 1.0,
+            "recall": 0.9615384615384616,
+            "f1-score": 0.9803921568627451,
+            "support": 26.0
+        },
+        "cluster_diseases_of_the_circulatory_system": {
+            "precision": 0.875,
+            "recall": 0.7,
+            "f1-score": 0.7777777777777778,
+            "support": 20.0
+        },
+        "cluster_external_causes_of_death": {
+            "precision": 0.8918918918918919,
+            "recall": 0.9166666666666666,
+            "f1-score": 0.9041095890410958,
+            "support": 36.0
+        },
+        "cluster_gastrointestinal_disorders": {
+            "precision": 0.8,
+            "recall": 0.75,
+            "f1-score": 0.7741935483870968,
+            "support": 16.0
+        },
+        "cluster_infectious_and_parasitic_diseases": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 23.0
+        },
+        "cluster_mental_and_nervous_system_disorders": {
+            "precision": 0.8125,
+            "recall": 0.9285714285714286,
+            "f1-score": 0.8666666666666667,
+            "support": 14.0
+        },
+        "cluster_neonatal_causes_of_death": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 23.0
+        },
+        "cluster_neoplasms": {
+            "precision": 0.96875,
+            "recall": 0.8157894736842105,
+            "f1-score": 0.8857142857142857,
+            "support": 38.0
+        },
+        "cluster_non_communicable_diseases": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 4.0
+        },
+        "cluster_nutritional_and_endocrine_disorders": {
+            "precision": 0.8,
+            "recall": 0.5714285714285714,
+            "f1-score": 0.6666666666666666,
+            "support": 7.0
+        },
+        "cluster_pregnancy_childbirth_and_puerperium_related_disorders": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 6.0
+        },
+        "cluster_renal_disorders": {
+            "precision": 0.9090909090909091,
+            "recall": 1.0,
+            "f1-score": 0.9523809523809523,
+            "support": 10.0
+        },
+        "cluster_respiratory_disorders": {
+            "precision": 1.0,
+            "recall": 0.75,
+            "f1-score": 0.8571428571428571,
+            "support": 12.0
+        },
+        "cluster_stillbirths": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 3.0
+        },
+        "accuracy": 0.9326241134751773,
+        "macro avg": {
+            "precision": 0.9343537055724392,
+            "recall": 0.9092352084665104,
+            "f1-score": 0.9184006230606294,
+            "support": 564.0
+        },
+        "weighted avg": {
+            "precision": 0.9339735482124094,
+            "recall": 0.9326241134751773,
+            "f1-score": 0.9311397836469704,
+            "support": 564.0
+        }
+    }
+}
