@@ -191,25 +191,31 @@ class CCVAPredictor:
 
     # Feature columns that are administrative/metadata, not clinical signals:
     # id10010* is the VA interviewer's own name/age/sex/ID (who conducted the
-    # interview, not who died); id10023* is the recorded date of death;
-    # id10069* is whether/whether-there-is-a-certificate for civil
-    # registration. None of these describe the decedent's symptoms, yet all
-    # three showed up as top "explainer" contributors on real records (date
-    # of death "pushing towards" Diabetes mellitus; the civil-registration
-    # question doing the same on two unrelated records) - confirmed these
-    # are genuinely in the trained feature set with real, non-trivial global
-    # importance (id10023_a ranked #57 of 742 features, on par with an
-    # actual diabetes-diagnosis question), almost certainly because date/
-    # administrative fields proxy for which source dataset or time period a
-    # record came from rather than anything clinical - a confound, not a
-    # cause. Suppressing them here stops them being shown as if they
-    # explained a decision; it does not stop the model using them, which
-    # argues for excluding them from the feature set itself on the next
-    # retrain (vman_ml/instrument_dictionary.py's feature-column selection),
-    # not just here.
+    # interview, not who died); id10020-id10023* is the date-of-birth/
+    # date-of-death family (both the "is it known?" completeness flags and
+    # the recorded dates themselves); id10069* is whether/whether-there-is-a-
+    # certificate for civil registration. None of these describe the
+    # decedent's symptoms, yet several showed up as top "explainer"
+    # contributors on real records (date of death "pushing towards" Diabetes
+    # mellitus and, on another record, towards Malaria; the civil-
+    # registration question doing the same on two unrelated records) -
+    # confirmed these are genuinely in the trained feature set with real,
+    # non-trivial global importance (id10023_a ranked #57 of 742 features, on
+    # par with an actual diabetes-diagnosis question), almost certainly
+    # because date/administrative fields proxy for which source dataset or
+    # time period a record came from rather than anything clinical - a
+    # confound, not a cause. id10020-id10022 were added alongside id10023 for
+    # the same reason even though they hadn't individually surfaced yet: a
+    # "was this date known?" flag has the identical dataset-proxy risk as the
+    # date value it accompanies. Suppressing them here stops them being
+    # shown as if they explained a decision; it does not stop the model
+    # using them, which argues for excluding them from the feature set
+    # itself on the next retrain (vman_ml/instrument_dictionary.py's
+    # feature-column selection), not just here.
     _SUPPRESSED_FEATURES = frozenset({
         'id10010', 'id10010a', 'id10010b', 'id10010c',
-        'id10023', 'id10023_a', 'id10023_b',
+        'id10020', 'id10021',
+        'id10022', 'id10023', 'id10023_a', 'id10023_b',
         'id10069', 'id10069_a',
     })
 
